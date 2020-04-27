@@ -1,9 +1,8 @@
-/// Ported from https://github.com/python/cpython/blob/master/Python/marshal.c
+/// Ported from <https://github.com/python/cpython/blob/master/Python/marshal.c>
 use bitflags::bitflags;
 use num_bigint::BigInt;
 use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -93,7 +92,7 @@ bitflags! {
     }
 }
 
-#[rustfmt::ignore]
+#[rustfmt::skip]
 #[derive(Clone)]
 pub enum Obj {
     None,
@@ -131,24 +130,27 @@ pub enum Obj {
     // etc.
 }
 impl Obj {
+    #[must_use]
     pub fn extract_bytes(&self) -> Option<Rc<Vec<u8>>> {
-        if let Obj::Bytes(x) = self {
+        if let Self::Bytes(x) = self {
             Some(Rc::clone(x))
         } else {
             None
         }
     }
 
+    #[must_use]
     pub fn extract_string(&self) -> Option<Rc<String>> {
-        if let Obj::String(x) = self {
+        if let Self::String(x) = self {
             Some(Rc::clone(x))
         } else {
             None
         }
     }
 
-    pub fn extract_tuple(&self) -> Option<Rc<Vec<Obj>>> {
-        if let Obj::Tuple(x) = self {
+    #[must_use]
+    pub fn extract_tuple(&self) -> Option<Rc<Vec<Self>>> {
+        if let Self::Tuple(x) = self {
             Some(Rc::clone(x))
         } else {
             None
@@ -237,23 +239,23 @@ impl TryFrom<&Obj> for ObjHashable {
 
     fn try_from(orig: &Obj) -> Result<Self, Obj> {
         match orig {
-            Obj::None => Ok(ObjHashable::None),
-            Obj::StopIteration => Ok(ObjHashable::StopIteration),
-            Obj::Ellipsis => Ok(ObjHashable::Ellipsis),
-            Obj::Bool(x) => Ok(ObjHashable::Bool(*x)),
-            Obj::Long(x) => Ok(ObjHashable::Long(Rc::clone(x))),
-            Obj::Float(x) => Ok(ObjHashable::Float(HashF64(*x))),
-            Obj::Complex(Complex { re, im }) => Ok(ObjHashable::Complex(Complex {
+            Obj::None => Ok(Self::None),
+            Obj::StopIteration => Ok(Self::StopIteration),
+            Obj::Ellipsis => Ok(Self::Ellipsis),
+            Obj::Bool(x) => Ok(Self::Bool(*x)),
+            Obj::Long(x) => Ok(Self::Long(Rc::clone(x))),
+            Obj::Float(x) => Ok(Self::Float(HashF64(*x))),
+            Obj::Complex(Complex { re, im }) => Ok(Self::Complex(Complex {
                 re: HashF64(*re),
                 im: HashF64(*im),
             })),
-            Obj::String(x) => Ok(ObjHashable::String(Rc::clone(x))),
-            Obj::Tuple(x) => Ok(ObjHashable::Tuple(Rc::new(
+            Obj::String(x) => Ok(Self::String(Rc::clone(x))),
+            Obj::Tuple(x) => Ok(Self::Tuple(Rc::new(
                 x.iter()
                     .map(Self::try_from)
                     .collect::<Result<Vec<Self>, Obj>>()?,
             ))),
-            Obj::FrozenSet(x) => Ok(ObjHashable::FrozenSet(Rc::new(
+            Obj::FrozenSet(x) => Ok(Self::FrozenSet(Rc::new(
                 x.iter().cloned().collect::<HashableHashSet<Self>>(),
             ))),
             x => Err(x.clone()),
@@ -267,9 +269,10 @@ mod utils {
     use std::cmp::Ordering;
 
     // TODO: test
-    /// Based on _PyLong_AsByteArray in https://github.com/python/cpython/blob/master/Objects/longobject.c
+    /// Based on `_PyLong_AsByteArray` in <https://github.com/python/cpython/blob/master/Objects/longobject.c>
+    #[allow(clippy::cast_possible_truncation)]
     pub fn biguint_from_pylong_digits(digits: &[u16]) -> BigUint {
-        if digits.len() == 0 {
+        if digits.is_empty() {
             return BigUint::zero();
         };
         assert!(digits[digits.len() - 1] != 0);
@@ -277,7 +280,7 @@ mod utils {
         let mut accumbits: u8 = 0;
         let mut p = Vec::<u32>::new();
         for (i, &thisdigit) in digits.iter().enumerate() {
-            accum |= (thisdigit as u64) << accumbits;
+            accum |= u64::from(thisdigit) << accumbits;
             accumbits += if i == digits.len() - 1 {
                 16 - (thisdigit.leading_zeros() as u8)
             } else {
@@ -298,7 +301,7 @@ mod utils {
         BigUint::new(p)
     }
 
-    pub fn sign_of<T: Ord + Zero>(x: T) -> Sign {
+    pub fn sign_of<T: Ord + Zero>(x: &T) -> Sign {
         match x.cmp(&T::zero()) {
             Ordering::Less => Sign::Minus,
             Ordering::Equal => Sign::NoSign,
@@ -325,16 +328,21 @@ mod utils {
 }
 
 pub mod read {
-    use super::*;
+    use crate::{utils, CodeFlags, Depth, Obj, ObjHashable, Type};
     use num_bigint::BigInt;
-    use num_traits::Zero;
+    use num_complex::Complex;
+    use num_traits::{FromPrimitive, Zero};
     use std::{
+        collections::{HashMap, HashSet},
+        convert::TryFrom,
         io::{self, Read},
         num::ParseFloatError,
+        rc::Rc,
         str::{FromStr, Utf8Error},
         string::FromUtf8Error,
     };
 
+    #[allow(clippy::pub_enum_variant_names)]
     pub enum Error {
         IoError(io::Error),
         InvalidType(u8),
@@ -398,10 +406,12 @@ pub mod read {
     // TODO: test
     /// May misbehave on 16-bit platforms.
     fn r_pylong(p: &mut RFile<impl Read>) -> Result<BigInt> {
+        #[allow(clippy::cast_possible_wrap)]
         let n = r_long(p)? as i32;
         if n == 0 {
             return Ok(BigInt::zero());
         };
+        #[allow(clippy::cast_sign_loss)]
         let size = n.wrapping_abs() as u32;
         let mut digits = Vec::<u16>::with_capacity(size as usize);
         for _ in 0..size {
@@ -415,7 +425,7 @@ pub mod read {
             return Err(Error::UnnormalizedLong);
         }
         Ok(BigInt::from_biguint(
-            utils::sign_of(n),
+            utils::sign_of(&n),
             utils::biguint_from_pylong_digits(&digits),
         ))
     }
@@ -475,6 +485,7 @@ pub mod read {
             (flag, type_)
         };
         #[rustfmt::skip]
+        #[allow(clippy::cast_possible_wrap)]
         let retval = match type_ {
             Type::Null          => None,
             Type::None          => Some(Obj::None),
@@ -483,7 +494,7 @@ pub mod read {
             Type::False         => Some(Obj::Bool(false)),
             Type::True          => Some(Obj::Bool(true)),
             Type::Int           => Some(Obj::Long(Rc::new(BigInt::from(r_long(p)?   as i32)))),
-            Type::Int64         => Some(Obj::Long(Rc::new(BigInt::from(r_long64(p)? as i32)))),
+            Type::Int64         => Some(Obj::Long(Rc::new(BigInt::from(r_long64(p)? as i64)))),
             Type::Long          => Some(Obj::Long(Rc::new(r_pylong(p)?))),
             Type::Float         => Some(Obj::Float(r_float_str(p)?)),
             Type::BinaryFloat   => Some(Obj::Float(r_float_bin(p)?)),
@@ -582,6 +593,8 @@ pub mod read {
         r_object(p)
     }
 
+    /// # Errors
+    /// See [`Error`].
     pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
         let mut rf = RFile {
             depth:    Depth::new(),
