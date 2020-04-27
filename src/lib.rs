@@ -3,9 +3,10 @@ use num_bigint::BigInt;
 use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
+use std::iter::FromIterator;
 use std::rc::Rc;
 
 #[derive(FromPrimitive, ToPrimitive)]
@@ -77,6 +78,8 @@ pub enum Obj {
     Tuple(Rc<Vec<Obj>>),
     List(Rc<Vec<Obj>>),
     Dict(Rc<HashMap<ObjHashable, Obj>>),
+    Set(Rc<HashSet<ObjHashable>>),
+    FrozenSet(Rc<HashSet<ObjHashable>>),
     // etc.
 }
 
@@ -104,6 +107,31 @@ impl Hash for HashF64 {
     }
 }
 
+pub struct HashableHashSet<T>(HashSet<T>);
+impl<T> Hash for HashableHashSet<T> where T: Hash {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut xor: u64 = 0;
+        let hasher = std::collections::hash_map::DefaultHasher::new();
+        for value in &self.0 {
+            let mut hasher_clone = hasher.clone();
+            value.hash(&mut hasher_clone);
+            xor ^= hasher_clone.finish();
+        }
+        state.write_u64(xor);
+    }
+}
+impl<T> PartialEq for HashableHashSet<T> where T: Eq + Hash {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl<T> Eq for HashableHashSet<T> where T: Eq + Hash {}
+impl<T> FromIterator<T> for HashableHashSet<T> where T: Eq + Hash {
+    fn from_iter<I>(iter: I) -> Self where I: IntoIterator<Item = T> {
+        Self(iter.into_iter().collect())
+    }
+}
+
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub enum ObjHashable {
     None,
@@ -115,6 +143,7 @@ pub enum ObjHashable {
     Complex(Complex<HashF64>),
     String(Rc<String>),
     Tuple(Rc<Vec<ObjHashable>>),
+    FrozenSet(Rc<HashableHashSet<ObjHashable>>),
     // etc.
 }
 
@@ -138,6 +167,11 @@ impl TryFrom<&Obj> for ObjHashable {
                 x.iter()
                     .map(Self::try_from)
                     .collect::<Result<Vec<Self>, Obj>>()?,
+            ))),
+            Obj::FrozenSet(x) => Ok(ObjHashable::FrozenSet(Rc::new(
+                x.iter()
+                    .cloned()
+                    .collect::<HashableHashSet<Self>>(),
             ))),
             x => Err(x.clone()),
         }
@@ -332,6 +366,14 @@ pub mod read {
         Ok(map)
     }
 
+    fn r_hashset(n: usize, p: &mut RFile<impl Read>) -> Result<HashSet<ObjHashable>> {
+        let mut set = HashSet::new();
+        for _ in 0..n {
+            set.insert(ObjHashable::try_from(&r_object(p)?.ok_or(Error::Null)?).map_err(Error::Unhashable)?);
+        }
+        Ok(set)
+    }
+
     fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         let code: u8 = r_byte(p)?;
         let _depth_handle = p
@@ -375,6 +417,8 @@ pub mod read {
             Type::Tuple => Some(Obj::Tuple(Rc::new(r_vec(r_long(p)? as usize, p)?))),
             Type::List => Some(Obj::List(Rc::new(r_vec(r_long(p)? as usize, p)?))),
             Type::Dict => Some(Obj::Dict(Rc::new(r_hashmap(p)?))),
+            Type::Set => Some(Obj::Set(Rc::new(r_hashset(r_long(p)? as usize, p)?))),
+            Type::FrozenSet => Some(Obj::FrozenSet(Rc::new(r_hashset(r_long(p)? as usize, p)?))),
             _ => todo!(), // TODO
         };
         match retval {
