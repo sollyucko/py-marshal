@@ -110,25 +110,38 @@ pub mod objects {
     use std::any::Any;
     use std::collections::HashMap;
     use std::hash::{Hash, Hasher};
+    use std::ops::Deref;
     use std::rc::Rc;
 
     trait Py: Any {}
-    trait PyHash: Py + Hash {}
+    trait PyHashEq: Py + Hash + Eq {}
+
+    impl<T: 'static, U> Py for T where T: Deref<Target = U> {} 
 
     macro_rules! define_py {
         ($ident:ident($($field:tt)*)) => {
             pub struct $ident($($field)*);
+            impl Py for $ident {}
         }
     }
 
-    define_py! { PyNone() }
-    define_py! { PyStopIteration() }
-    define_py! { PyEllipsis() }
-    define_py! { PyBool(bool) }
-    define_py! { PyLong(BigInt) }
+    macro_rules! define_py_hash_eq {
+        ($ident:ident($($field:tt)*)) => {
+            #[derive(Hash, PartialEq, Eq)]
+            pub struct $ident($($field)*);
+            impl Py for $ident {}
+            impl PyHashEq for $ident {}
+        }
+    }
+
+    define_py_hash_eq! { PyNone() }
+    define_py_hash_eq! { PyStopIteration() }
+    define_py_hash_eq! { PyEllipsis() }
+    define_py_hash_eq! { PyBool(bool) }
+    define_py_hash_eq! { PyLong(BigInt) }
     define_py! { PyFloat(f64/*HashF64*/) }
     define_py! { PyComplex(Complex<f64/*HashF64*/>) }
-    define_py! { PyString(String) }
+    define_py_hash_eq! { PyString(String) }
     define_py! { PyTuple(Vec<Rc<dyn Py>>) }
     define_py! { PyList(Vec<Rc<dyn Py>>) }
     define_py! { PyDict(HashMap<Rc<dyn Py>, Rc<dyn Py>>) }
