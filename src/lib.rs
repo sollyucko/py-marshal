@@ -347,6 +347,7 @@ pub mod read {
         IsNull,
         Unhashable(Obj),
         TypeError,
+        InvalidRef,
     }
 
     type Result<T> = std::result::Result<T, Error>;
@@ -527,7 +528,11 @@ pub mod read {
                 firstlineno:     r_long(p)?,
                 lnotab:          r_object_extract_bytes(p)?,
             }),
-            _ => todo!(), // TODO
+            Type::Ref => {
+                let n = r_long(p)? as usize;
+                Some(p.refs.get(n).ok_or(Error::InvalidRef)?.clone())
+            }
+            Type::Unknown => return Err(Error::InvalidType(Type::Unknown as u8)),
         };
         match retval {
             None
