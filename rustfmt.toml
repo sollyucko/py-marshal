@@ -1,1 +1,4 @@
 enum_discrim_align_threshold = 40
+struct_field_align_threshold = 20
+merge_imports = true
+reorder_imports = true

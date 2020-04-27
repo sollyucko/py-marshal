@@ -1,13 +1,16 @@
 /// Ported from https://github.com/python/cpython/blob/master/Python/marshal.c
+use bitflags::bitflags;
 use num_bigint::BigInt;
 use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
-use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
-use std::hash::{Hash, Hasher};
-use std::iter::FromIterator;
-use std::rc::Rc;
+use std::{
+    collections::{HashMap, HashSet},
+    convert::TryFrom,
+    hash::{Hash, Hasher},
+    iter::FromIterator,
+    rc::Rc,
+};
 
 #[derive(FromPrimitive, ToPrimitive)]
 #[repr(u8)]
@@ -64,23 +67,93 @@ impl Depth {
     }
 }
 
-//#[derive(PartialEq, Eq)]
+bitflags! {
+    pub struct CodeFlags: u32 {
+        const OPTIMIZED                   = 0x1;
+        const NEWLOCALS                   = 0x2;
+        const VARARGS                     = 0x4;
+        const VARKEYWORDS                 = 0x8;
+        const NESTED                     = 0x10;
+        const GENERATOR                  = 0x20;
+        const NOFREE                     = 0x40;
+        const COROUTINE                  = 0x80;
+        const ITERABLE_COROUTINE        = 0x100;
+        const ASYNC_GENERATOR           = 0x200;
+        // TODO: old versions
+        const GENERATOR_ALLOWED        = 0x1000;
+        const FUTURE_DIVISION          = 0x2000;
+        const FUTURE_ABSOLUTE_IMPORT   = 0x4000;
+        const FUTURE_WITH_STATEMENT    = 0x8000;
+        const FUTURE_PRINT_FUNCTION   = 0x10000;
+        const FUTURE_UNICODE_LITERALS = 0x20000;
+        const FUTURE_BARRY_AS_BDFL    = 0x40000;
+        const FUTURE_GENERATOR_STOP   = 0x80000;
+        #[allow(clippy::unreadable_literal)]
+        const FUTURE_ANNOTATIONS     = 0x100000;
+    }
+}
+
+#[rustfmt::ignore]
 #[derive(Clone)]
 pub enum Obj {
     None,
     StopIteration,
     Ellipsis,
-    Bool(bool),
-    Long(Rc<BigInt>),
-    Float(f64 /*HashF64*/),
-    Complex(Complex<f64 /*HashF64*/>),
-    String(Rc<String>),
-    Tuple(Rc<Vec<Obj>>),
-    List(Rc<Vec<Obj>>),
-    Dict(Rc<HashMap<ObjHashable, Obj>>),
-    Set(Rc<HashSet<ObjHashable>>),
+    Bool(     bool),
+    Long(     Rc<BigInt>),
+    Float(    f64),
+    Complex(  Complex<f64>),
+    Bytes(    Rc<Vec<u8>>),
+    String(   Rc<String>),
+    Tuple(    Rc<Vec<Obj>>),
+    List(     Rc<Vec<Obj>>),
+    Dict(     Rc<HashMap<ObjHashable, Obj>>),
+    Set(      Rc<HashSet<ObjHashable>>),
     FrozenSet(Rc<HashSet<ObjHashable>>),
+    Code {
+        argcount:        u32,
+        posonlyargcount: u32,
+        kwonlyargcount:  u32,
+        nlocals:         u32,
+        stacksize:       u32,
+        flags:           CodeFlags,
+        code:            Rc<Vec<u8>>,
+        consts:          Rc<Vec<Obj>>,
+        names:           Rc<Vec<String>>,
+        varnames:        Rc<Vec<String>>,
+        freevars:        Rc<Vec<String>>,
+        cellvars:        Rc<Vec<String>>,
+        filename:        Rc<String>,
+        name:            Rc<String>,
+        firstlineno:     u32,
+        lnotab:          Rc<Vec<u8>>,
+    },
     // etc.
+}
+impl Obj {
+    pub fn extract_bytes(&self) -> Option<Rc<Vec<u8>>> {
+        if let Obj::Bytes(x) = self {
+            Some(Rc::clone(x))
+        } else {
+            None
+        }
+    }
+
+    pub fn extract_string(&self) -> Option<Rc<String>> {
+        if let Obj::String(x) = self {
+            Some(Rc::clone(x))
+        } else {
+            None
+        }
+    }
+
+    pub fn extract_tuple(&self) -> Option<Rc<Vec<Obj>>> {
+        if let Obj::Tuple(x) = self {
+            Some(Rc::clone(x))
+        } else {
+            None
+        }
+    }
 }
 
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
@@ -108,7 +181,10 @@ impl Hash for HashF64 {
 }
 
 pub struct HashableHashSet<T>(HashSet<T>);
-impl<T> Hash for HashableHashSet<T> where T: Hash {
+impl<T> Hash for HashableHashSet<T>
+where
+    T: Hash,
+{
     fn hash<H: Hasher>(&self, state: &mut H) {
         let mut xor: u64 = 0;
         let hasher = std::collections::hash_map::DefaultHasher::new();
@@ -120,14 +196,23 @@ impl<T> Hash for HashableHashSet<T> where T: Hash {
         state.write_u64(xor);
     }
 }
-impl<T> PartialEq for HashableHashSet<T> where T: Eq + Hash {
+impl<T> PartialEq for HashableHashSet<T>
+where
+    T: Eq + Hash,
+{
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 impl<T> Eq for HashableHashSet<T> where T: Eq + Hash {}
-impl<T> FromIterator<T> for HashableHashSet<T> where T: Eq + Hash {
-    fn from_iter<I>(iter: I) -> Self where I: IntoIterator<Item = T> {
+impl<T> FromIterator<T> for HashableHashSet<T>
+where
+    T: Eq + Hash,
+{
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
         Self(iter.into_iter().collect())
     }
 }
@@ -169,9 +254,7 @@ impl TryFrom<&Obj> for ObjHashable {
                     .collect::<Result<Vec<Self>, Obj>>()?,
             ))),
             Obj::FrozenSet(x) => Ok(ObjHashable::FrozenSet(Rc::new(
-                x.iter()
-                    .cloned()
-                    .collect::<HashableHashSet<Self>>(),
+                x.iter().cloned().collect::<HashableHashSet<Self>>(),
             ))),
             x => Err(x.clone()),
         }
@@ -245,10 +328,12 @@ pub mod read {
     use super::*;
     use num_bigint::BigInt;
     use num_traits::Zero;
-    use std::io::{self, Read};
-    use std::num::ParseFloatError;
-    use std::str::{FromStr, Utf8Error};
-    use std::string::FromUtf8Error;
+    use std::{
+        io::{self, Read},
+        num::ParseFloatError,
+        str::{FromStr, Utf8Error},
+        string::FromUtf8Error,
+    };
 
     pub enum Error {
         IoError(io::Error),
@@ -259,19 +344,20 @@ pub mod read {
         Utf8Error(Utf8Error),
         FromUtf8Error(FromUtf8Error),
         ParseFloatError(ParseFloatError),
-        Null,
+        IsNull,
         Unhashable(Obj),
+        TypeError,
     }
 
     type Result<T> = std::result::Result<T, Error>;
 
     struct RFile<R: Read> {
         //fp: fs::File,
-        depth: Depth,
+        depth:    Depth,
         readable: R,
         //pos: usize,
         //buf: Option<Vec<u8>>,
-        refs: Vec<Obj>,
+        refs:     Vec<Obj>,
     }
 
     macro_rules! define_r {
@@ -342,7 +428,7 @@ pub mod read {
     fn r_vec(n: usize, p: &mut RFile<impl Read>) -> Result<Vec<Obj>> {
         let mut vec = Vec::with_capacity(n);
         for _ in 0..n {
-            vec.push(r_object(p)?.ok_or(Error::Null)?);
+            vec.push(r_object_not_null(p)?);
         }
         Ok(vec)
     }
@@ -369,7 +455,7 @@ pub mod read {
     fn r_hashset(n: usize, p: &mut RFile<impl Read>) -> Result<HashSet<ObjHashable>> {
         let mut set = HashSet::new();
         for _ in 0..n {
-            set.insert(ObjHashable::try_from(&r_object(p)?.ok_or(Error::Null)?).map_err(Error::Unhashable)?);
+            set.insert(ObjHashable::try_from(&r_object_not_null(p)?).map_err(Error::Unhashable)?);
         }
         Ok(set)
     }
@@ -387,19 +473,20 @@ pub mod read {
                 Type::from_u8(type_u8).map_or(Err(Error::InvalidType(type_u8)), Ok)?;
             (flag, type_)
         };
+        #[rustfmt::skip]
         let retval = match type_ {
-            Type::Null => None,
-            Type::None => Some(Obj::None),
-            Type::StopIter => Some(Obj::StopIteration),
-            Type::Ellipsis => Some(Obj::Ellipsis),
-            Type::False => Some(Obj::Bool(false)),
-            Type::True => Some(Obj::Bool(true)),
-            Type::Int => Some(Obj::Long(Rc::new(BigInt::from(r_long(p)? as i32)))),
-            Type::Int64 => Some(Obj::Long(Rc::new(BigInt::from(r_long64(p)? as i32)))),
-            Type::Long => Some(Obj::Long(Rc::new(r_pylong(p)?))),
-            Type::Float => Some(Obj::Float(r_float_str(p)?)),
-            Type::BinaryFloat => Some(Obj::Float(r_float_bin(p)?)),
-            Type::Complex => Some(Obj::Complex(Complex {
+            Type::Null          => None,
+            Type::None          => Some(Obj::None),
+            Type::StopIter      => Some(Obj::StopIteration),
+            Type::Ellipsis      => Some(Obj::Ellipsis),
+            Type::False         => Some(Obj::Bool(false)),
+            Type::True          => Some(Obj::Bool(true)),
+            Type::Int           => Some(Obj::Long(Rc::new(BigInt::from(r_long(p)?   as i32)))),
+            Type::Int64         => Some(Obj::Long(Rc::new(BigInt::from(r_long64(p)? as i32)))),
+            Type::Long          => Some(Obj::Long(Rc::new(r_pylong(p)?))),
+            Type::Float         => Some(Obj::Float(r_float_str(p)?)),
+            Type::BinaryFloat   => Some(Obj::Float(r_float_bin(p)?)),
+            Type::Complex       => Some(Obj::Complex(Complex {
                 re: r_float_str(p)?,
                 im: r_float_str(p)?,
             })),
@@ -407,18 +494,39 @@ pub mod read {
                 re: r_float_bin(p)?,
                 im: r_float_bin(p)?,
             })),
-            Type::String | Type::AsciiInterned | Type::Ascii => {
+            Type::String => {
+                Some(Obj::Bytes( Rc::new(r_bytes( r_long(p)? as usize, p)?)))
+            }
+            Type::AsciiInterned | Type::Ascii | Type::Interned | Type::Unicode => {
                 Some(Obj::String(Rc::new(r_string(r_long(p)? as usize, p)?)))
             }
             Type::ShortAsciiInterned | Type::ShortAscii => {
                 Some(Obj::String(Rc::new(r_string(r_byte(p)? as usize, p)?)))
             }
-            Type::SmallTuple => Some(Obj::Tuple(Rc::new(r_vec(r_byte(p)? as usize, p)?))),
-            Type::Tuple => Some(Obj::Tuple(Rc::new(r_vec(r_long(p)? as usize, p)?))),
-            Type::List => Some(Obj::List(Rc::new(r_vec(r_long(p)? as usize, p)?))),
-            Type::Dict => Some(Obj::Dict(Rc::new(r_hashmap(p)?))),
-            Type::Set => Some(Obj::Set(Rc::new(r_hashset(r_long(p)? as usize, p)?))),
-            Type::FrozenSet => Some(Obj::FrozenSet(Rc::new(r_hashset(r_long(p)? as usize, p)?))),
+            Type::SmallTuple => Some(Obj::Tuple(    Rc::new(r_vec(    r_byte(p)? as usize, p)?))),
+            Type::Tuple      => Some(Obj::Tuple(    Rc::new(r_vec(    r_long(p)? as usize, p)?))),
+            Type::List       => Some(Obj::List(     Rc::new(r_vec(    r_long(p)? as usize, p)?))),
+            Type::Set        => Some(Obj::Set(      Rc::new(r_hashset(r_long(p)? as usize, p)?))),
+            Type::FrozenSet  => Some(Obj::FrozenSet(Rc::new(r_hashset(r_long(p)? as usize, p)?))),
+            Type::Dict       => Some(Obj::Dict(     Rc::new(r_hashmap(p)?))),
+            Type::Code       => Some(Obj::Code {
+                argcount:        r_long(p)?,
+                posonlyargcount: r_long(p)?,
+                kwonlyargcount:  r_long(p)?,
+                nlocals:         r_long(p)?,
+                stacksize:       r_long(p)?,
+                flags:           CodeFlags::from_bits_truncate(r_long(p)?),
+                code:            r_object_extract_bytes(p)?,
+                consts:          r_object_extract_tuple(p)?,
+                names:           r_object_extract_tuple_string(p)?,
+                varnames:        r_object_extract_tuple_string(p)?,
+                freevars:        r_object_extract_tuple_string(p)?,
+                cellvars:        r_object_extract_tuple_string(p)?,
+                filename:        r_object_extract_string(p)?,
+                name:            r_object_extract_string(p)?,
+                firstlineno:     r_long(p)?,
+                lnotab:          r_object_extract_bytes(p)?,
+            }),
             _ => todo!(), // TODO
         };
         match retval {
@@ -433,17 +541,49 @@ pub mod read {
         Ok(retval)
     }
 
+    fn r_object_not_null(p: &mut RFile<impl Read>) -> Result<Obj> {
+        Ok(r_object(p)?.ok_or(Error::IsNull)?)
+    }
+    fn r_object_extract_string(p: &mut RFile<impl Read>) -> Result<Rc<String>> {
+        Ok(r_object_not_null(p)?
+            .extract_string()
+            .ok_or(Error::TypeError)?)
+    }
+    fn r_object_extract_bytes(p: &mut RFile<impl Read>) -> Result<Rc<Vec<u8>>> {
+        Ok(r_object_not_null(p)?
+            .extract_bytes()
+            .ok_or(Error::TypeError)?)
+    }
+    fn r_object_extract_tuple(p: &mut RFile<impl Read>) -> Result<Rc<Vec<Obj>>> {
+        Ok(r_object_not_null(p)?
+            .extract_tuple()
+            .ok_or(Error::TypeError)?)
+    }
+    fn r_object_extract_tuple_string(p: &mut RFile<impl Read>) -> Result<Rc<Vec<String>>> {
+        Ok(Rc::new(
+            r_object_extract_tuple(p)?
+                .iter()
+                .map(|x| {
+                    x.extract_string()
+                        .as_deref()
+                        .cloned()
+                        .ok_or(Error::TypeError)
+                })
+                .collect::<Result<Vec<String>>>()?,
+        ))
+    }
+
     fn read_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         r_object(p)
     }
 
     pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
         let mut rf = RFile {
-            depth: Depth::new(),
+            depth:    Depth::new(),
             readable: bytes,
             //pos: 0,
             //buf: None,
-            refs: Vec::<Obj>::new(),
+            refs:     Vec::<Obj>::new(),
         };
         read_object(&mut rf)
     }
