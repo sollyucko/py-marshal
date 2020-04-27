@@ -4,6 +4,7 @@ use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -62,9 +63,27 @@ impl Depth {
     }
 }
 
+//#[derive(PartialEq, Eq)]
+#[derive(Clone)]
+pub enum Obj {
+    None,
+    StopIteration,
+    Ellipsis,
+    Bool(bool),
+    Long(Rc<BigInt>),
+    Float(f64 /*HashF64*/),
+    Complex(Complex<f64 /*HashF64*/>),
+    String(Rc<String>),
+    Tuple(Rc<Vec<Obj>>),
+    List(Rc<Vec<Obj>>),
+    Dict(Rc<HashMap<ObjHashable, Obj>>),
+    // etc.
+}
+
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
 /// each other, so it can implement Eq and Hash. `HashF64(-0.0) == HashF64(0.0)`.
-struct HashF64(f64);
+#[derive(Clone)]
+pub struct HashF64(f64);
 impl PartialEq for HashF64 {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0 || (self.0.is_nan() && other.0.is_nan())
@@ -85,66 +104,44 @@ impl Hash for HashF64 {
     }
 }
 
-// TODO: change to using a trait
-//#[derive(PartialEq, Eq)]
-pub enum Obj {
+#[derive(PartialEq, Eq, Hash, Clone)]
+pub enum ObjHashable {
     None,
     StopIteration,
     Ellipsis,
     Bool(bool),
-    Long(BigInt),
-    Float(f64 /*HashF64*/),
-    Complex(Complex<f64 /*HashF64*/>),
-    String(String),
-    Tuple(Vec<Rc<Obj>>),
-    List(Vec<Rc<Obj>>),
-    Dict(HashMap<Rc<Obj>, Rc<Obj>>),
+    Long(Rc<BigInt>),
+    Float(HashF64),
+    Complex(Complex<HashF64>),
+    String(Rc<String>),
+    Tuple(Rc<Vec<ObjHashable>>),
     // etc.
 }
 
-pub mod objects {
-    use num_bigint::BigInt;
-    use num_complex::Complex;
-    use num_derive::{FromPrimitive, ToPrimitive};
-    use num_traits::FromPrimitive;
-    use std::any::Any;
-    use std::collections::HashMap;
-    use std::hash::{Hash, Hasher};
-    use std::ops::Deref;
-    use std::rc::Rc;
+impl TryFrom<&Obj> for ObjHashable {
+    type Error = Obj;
 
-    trait Py: Any {}
-    trait PyHashEq: Py + Hash + Eq {}
-
-    impl<T: 'static, U> Py for T where T: Deref<Target = U> {} 
-
-    macro_rules! define_py {
-        ($ident:ident($($field:tt)*)) => {
-            pub struct $ident($($field)*);
-            impl Py for $ident {}
+    fn try_from(orig: &Obj) -> Result<Self, Obj> {
+        match orig {
+            Obj::None => Ok(ObjHashable::None),
+            Obj::StopIteration => Ok(ObjHashable::StopIteration),
+            Obj::Ellipsis => Ok(ObjHashable::Ellipsis),
+            Obj::Bool(x) => Ok(ObjHashable::Bool(*x)),
+            Obj::Long(x) => Ok(ObjHashable::Long(Rc::clone(x))),
+            Obj::Float(x) => Ok(ObjHashable::Float(HashF64(*x))),
+            Obj::Complex(Complex { re, im }) => Ok(ObjHashable::Complex(Complex {
+                re: HashF64(*re),
+                im: HashF64(*im),
+            })),
+            Obj::String(x) => Ok(ObjHashable::String(Rc::clone(x))),
+            Obj::Tuple(x) => Ok(ObjHashable::Tuple(Rc::new(
+                x.iter()
+                    .map(Self::try_from)
+                    .collect::<Result<Vec<Self>, Obj>>()?,
+            ))),
+            x => Err(x.clone()),
         }
     }
-
-    macro_rules! define_py_hash_eq {
-        ($ident:ident($($field:tt)*)) => {
-            #[derive(Hash, PartialEq, Eq)]
-            pub struct $ident($($field)*);
-            impl Py for $ident {}
-            impl PyHashEq for $ident {}
-        }
-    }
-
-    define_py_hash_eq! { PyNone() }
-    define_py_hash_eq! { PyStopIteration() }
-    define_py_hash_eq! { PyEllipsis() }
-    define_py_hash_eq! { PyBool(bool) }
-    define_py_hash_eq! { PyLong(BigInt) }
-    define_py! { PyFloat(f64/*HashF64*/) }
-    define_py! { PyComplex(Complex<f64/*HashF64*/>) }
-    define_py_hash_eq! { PyString(String) }
-    define_py! { PyTuple(Vec<Rc<dyn Py>>) }
-    define_py! { PyList(Vec<Rc<dyn Py>>) }
-    define_py! { PyDict(HashMap<Rc<dyn Py>, Rc<dyn Py>>) }
 }
 
 mod utils {
@@ -229,6 +226,7 @@ pub mod read {
         FromUtf8Error(FromUtf8Error),
         ParseFloatError(ParseFloatError),
         Null,
+        Unhashable(Obj),
     }
 
     type Result<T> = std::result::Result<T, Error>;
@@ -239,7 +237,7 @@ pub mod read {
         readable: R,
         //pos: usize,
         //buf: Option<Vec<u8>>,
-        refs: Vec<Rc<Obj>>,
+        refs: Vec<Obj>,
     }
 
     macro_rules! define_r {
@@ -301,13 +299,13 @@ pub mod read {
         ))
     }
 
-    fn r_ref(o: Option<&Rc<Obj>>, p: &mut RFile<impl Read>) {
+    fn r_ref(o: &Option<Obj>, p: &mut RFile<impl Read>) {
         if let Some(x) = o {
             p.refs.push(x.clone());
         }
     }
 
-    fn r_vec(n: usize, p: &mut RFile<impl Read>) -> Result<Vec<Rc<Obj>>> {
+    fn r_vec(n: usize, p: &mut RFile<impl Read>) -> Result<Vec<Obj>> {
         let mut vec = Vec::with_capacity(n);
         for _ in 0..n {
             vec.push(r_object(p)?.ok_or(Error::Null)?);
@@ -315,21 +313,26 @@ pub mod read {
         Ok(vec)
     }
 
-    fn r_hashmap(p: &mut RFile<impl Read>) -> Result<HashMap<Rc<Obj>, Rc<Obj>>> {
+    fn r_hashmap(p: &mut RFile<impl Read>) -> Result<HashMap<ObjHashable, Obj>> {
         let mut map = HashMap::new();
         loop {
             match r_object(p)? {
                 None => break,
                 Some(key) => match r_object(p)? {
                     None => break,
-                    Some(value) => { /*map.insert(key, value);*/ } // TODO
+                    Some(value) => {
+                        map.insert(
+                            ObjHashable::try_from(&key).map_err(Error::Unhashable)?,
+                            value,
+                        );
+                    } // TODO
                 },
             }
         }
         Ok(map)
     }
 
-    fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Rc<Obj>>> {
+    fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         let code: u8 = r_byte(p)?;
         let _depth_handle = p
             .depth
@@ -349,9 +352,9 @@ pub mod read {
             Type::Ellipsis => Some(Obj::Ellipsis),
             Type::False => Some(Obj::Bool(false)),
             Type::True => Some(Obj::Bool(true)),
-            Type::Int => Some(Obj::Long(BigInt::from(r_long(p)? as i32))),
-            Type::Int64 => Some(Obj::Long(BigInt::from(r_long64(p)? as i32))),
-            Type::Long => Some(Obj::Long(r_pylong(p)?)),
+            Type::Int => Some(Obj::Long(Rc::new(BigInt::from(r_long(p)? as i32)))),
+            Type::Int64 => Some(Obj::Long(Rc::new(BigInt::from(r_long64(p)? as i32)))),
+            Type::Long => Some(Obj::Long(Rc::new(r_pylong(p)?))),
             Type::Float => Some(Obj::Float(r_float_str(p)?)),
             Type::BinaryFloat => Some(Obj::Float(r_float_bin(p)?)),
             Type::Complex => Some(Obj::Complex(Complex {
@@ -363,41 +366,40 @@ pub mod read {
                 im: r_float_bin(p)?,
             })),
             Type::String | Type::AsciiInterned | Type::Ascii => {
-                Some(Obj::String(r_string(r_long(p)? as usize, p)?))
+                Some(Obj::String(Rc::new(r_string(r_long(p)? as usize, p)?)))
             }
             Type::ShortAsciiInterned | Type::ShortAscii => {
-                Some(Obj::String(r_string(r_byte(p)? as usize, p)?))
+                Some(Obj::String(Rc::new(r_string(r_byte(p)? as usize, p)?)))
             }
-            Type::SmallTuple => Some(Obj::Tuple(r_vec(r_byte(p)? as usize, p)?)),
-            Type::Tuple => Some(Obj::Tuple(r_vec(r_long(p)? as usize, p)?)),
-            Type::List => Some(Obj::List(r_vec(r_long(p)? as usize, p)?)),
-            Type::Dict => Some(Obj::Dict(r_hashmap(p)?)),
+            Type::SmallTuple => Some(Obj::Tuple(Rc::new(r_vec(r_byte(p)? as usize, p)?))),
+            Type::Tuple => Some(Obj::Tuple(Rc::new(r_vec(r_long(p)? as usize, p)?))),
+            Type::List => Some(Obj::List(Rc::new(r_vec(r_long(p)? as usize, p)?))),
+            Type::Dict => Some(Obj::Dict(Rc::new(r_hashmap(p)?))),
             _ => todo!(), // TODO
-        }
-        .map(Rc::new);
-        match retval.as_deref() {
+        };
+        match retval {
             None
             | Some(Obj::None)
             | Some(Obj::StopIteration)
             | Some(Obj::Ellipsis)
             | Some(Obj::Bool(_)) => {}
-            Some(_) if flag => r_ref(retval.as_ref(), p),
+            Some(_) if flag => r_ref(&retval, p),
             Some(_) => {}
         };
         Ok(retval)
     }
 
-    fn read_object(p: &mut RFile<impl Read>) -> Result<Option<Rc<Obj>>> {
+    fn read_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         r_object(p)
     }
 
-    pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Rc<Obj>>> {
+    pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
         let mut rf = RFile {
             depth: Depth::new(),
             readable: bytes,
             //pos: 0,
             //buf: None,
-            refs: Vec::<Rc<Obj>>::new(),
+            refs: Vec::<Obj>::new(),
         };
         read_object(&mut rf)
     }
