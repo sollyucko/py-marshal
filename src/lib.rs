@@ -615,6 +615,11 @@ pub mod read {
             marshal_loads(s).unwrap().unwrap()
         }
 
+        #[test]
+        fn test_ints() {
+            assert_eq!(BigInt::parse_bytes(b"85070591730234615847396907784232501249", 10).unwrap(), *loads_unwrap(b"l\t\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xf0\x7f\xff\x7f\xff\x7f\xff\x7f?\x00").extract_long().unwrap());
+        }
+
         #[allow(clippy::unreadable_literal)]
         #[test]
         fn test_int64() {
