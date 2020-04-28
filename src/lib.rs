@@ -361,12 +361,9 @@ pub mod read {
     type Result<T> = std::result::Result<T, Error>;
 
     struct RFile<R: Read> {
-        //fp: fs::File,
-        depth:    Depth,
+        depth: Depth,
         readable: R,
-        //pos: usize,
-        //buf: Option<Vec<u8>>,
-        refs:     Vec<Obj>,
+        refs: Vec<Obj>,
     }
 
     macro_rules! define_r {
@@ -597,12 +594,15 @@ pub mod read {
     /// See [`Error`].
     pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
         let mut rf = RFile {
-            depth:    Depth::new(),
+            depth: Depth::new(),
             readable: bytes,
-            //pos: 0,
-            //buf: None,
-            refs:     Vec::<Obj>::new(),
+            refs: Vec::<Obj>::new(),
         };
         read_object(&mut rf)
+    }
+
+    #[cfg(test)]
+    mod test {
+        // TODO: add tests
     }
 }
