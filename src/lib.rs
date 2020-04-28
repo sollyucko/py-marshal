@@ -11,7 +11,7 @@ use std::{
     rc::Rc,
 };
 
-#[derive(FromPrimitive, ToPrimitive)]
+#[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
 #[repr(u8)]
 enum Type {
     Null               = b'0',
@@ -93,7 +93,7 @@ bitflags! {
 }
 
 #[rustfmt::skip]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Obj {
     None,
     StopIteration,
@@ -129,38 +129,39 @@ pub enum Obj {
     },
     // etc.
 }
+macro_rules! define_extract {
+    ($extract_fn:ident($variant:ident) -> Rc<$ret:ty>) => {
+        #[must_use]
+        pub fn $extract_fn(&self) -> Option<Rc<$ret>> {
+            if let Self::$variant(x) = self {
+                Some(Rc::clone(x))
+            } else {
+                None
+            }
+        }
+    };
+    ($extract_fn:ident($variant:ident) -> $ret:ty) => {
+        #[must_use]
+        pub fn $extract_fn(&self) -> Option<$ret> {
+            if let Self::$variant(x) = self {
+                Some(*x)
+            } else {
+                None
+            }
+        }
+    };
+}
 impl Obj {
-    #[must_use]
-    pub fn extract_bytes(&self) -> Option<Rc<Vec<u8>>> {
-        if let Self::Bytes(x) = self {
-            Some(Rc::clone(x))
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn extract_string(&self) -> Option<Rc<String>> {
-        if let Self::String(x) = self {
-            Some(Rc::clone(x))
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn extract_tuple(&self) -> Option<Rc<Vec<Self>>> {
-        if let Self::Tuple(x) = self {
-            Some(Rc::clone(x))
-        } else {
-            None
-        }
-    }
+    define_extract! { extract_bool  (Bool)   -> bool }
+    define_extract! { extract_long  (Long)   -> Rc<BigInt> }
+    define_extract! { extract_bytes (Bytes)  -> Rc<Vec<u8>> }
+    define_extract! { extract_string(String) -> Rc<String> }
+    define_extract! { extract_tuple (Tuple)  -> Rc<Vec<Self>> }
 }
 
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
 /// each other, so it can implement Eq and Hash. `HashF64(-0.0) == HashF64(0.0)`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HashF64(f64);
 impl PartialEq for HashF64 {
     fn eq(&self, other: &Self) -> bool {
@@ -182,6 +183,7 @@ impl Hash for HashF64 {
     }
 }
 
+#[derive(Debug)]
 pub struct HashableHashSet<T>(HashSet<T>);
 impl<T> Hash for HashableHashSet<T>
 where
@@ -219,7 +221,7 @@ where
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum ObjHashable {
     None,
     StopIteration,
@@ -268,7 +270,6 @@ mod utils {
     use num_traits::Zero;
     use std::cmp::Ordering;
 
-    // TODO: test
     /// Based on `_PyLong_AsByteArray` in <https://github.com/python/cpython/blob/master/Objects/longobject.c>
     #[allow(clippy::cast_possible_truncation)]
     pub fn biguint_from_pylong_digits(digits: &[u16]) -> BigUint {
@@ -311,8 +312,10 @@ mod utils {
 
     #[cfg(test)]
     mod test {
-        use super::*;
+        use super::biguint_from_pylong_digits;
+        use num_bigint::BigUint;
 
+        #[allow(clippy::inconsistent_digit_grouping)]
         #[test]
         fn test_biguint_from_pylong_digits() {
             assert_eq!(
@@ -343,6 +346,7 @@ pub mod read {
     };
 
     #[allow(clippy::pub_enum_variant_names)]
+    #[derive(Debug)]
     pub enum Error {
         IoError(io::Error),
         InvalidType(u8),
@@ -601,8 +605,70 @@ pub mod read {
         read_object(&mut rf)
     }
 
+    /// Ported from <https://github.com/python/cpython/blob/master/Lib/test/test_marshal.py>
     #[cfg(test)]
     mod test {
-        // TODO: add tests
+        use super::{marshal_loads, Obj};
+        use num_bigint::BigInt;
+
+        fn loads_unwrap(s: &[u8]) -> Obj {
+            marshal_loads(s).unwrap().unwrap()
+        }
+
+        #[allow(clippy::unreadable_literal)]
+        #[test]
+        fn test_int64() {
+            for mut base in [i64::MAX, i64::MIN, -i64::MAX, -(i64::MIN >> 1)]
+                .iter()
+                .copied()
+            {
+                while base != 0 {
+                    let mut s = Vec::<u8>::new();
+                    s.push(b'I');
+                    s.extend_from_slice(&base.to_le_bytes());
+                    assert_eq!(
+                        BigInt::from(base),
+                        *loads_unwrap(&s).extract_long().unwrap()
+                    );
+
+                    if base == -1 {
+                        base = 0
+                    } else {
+                        base >>= 1
+                    }
+                }
+            }
+
+            assert_eq!(
+                BigInt::from(0x1032547698badcfe_i64),
+                *loads_unwrap(b"I\xfe\xdc\xba\x98\x76\x54\x32\x10")
+                    .extract_long()
+                    .unwrap()
+            );
+            assert_eq!(
+                BigInt::from(-0x1032547698badcff_i64),
+                *loads_unwrap(b"I\x01\x23\x45\x67\x89\xab\xcd\xef")
+                    .extract_long()
+                    .unwrap()
+            );
+            assert_eq!(
+                BigInt::from(0x7f6e5d4c3b2a1908_i64),
+                *loads_unwrap(b"I\x08\x19\x2a\x3b\x4c\x5d\x6e\x7f")
+                    .extract_long()
+                    .unwrap()
+            );
+            assert_eq!(
+                BigInt::from(-0x7f6e5d4c3b2a1909_i64),
+                *loads_unwrap(b"I\xf7\xe6\xd5\xc4\xb3\xa2\x91\x80")
+                    .extract_long()
+                    .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_bool() {
+            assert_eq!(true, loads_unwrap(b"T").extract_bool().unwrap());
+            assert_eq!(false, loads_unwrap(b"F").extract_bool().unwrap());
+        }
     }
 }
