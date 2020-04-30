@@ -96,7 +96,7 @@ bitflags! {
 #[derive(Clone, Debug)]
 pub struct Code {
     argcount:        u32,
-    //posonlyargcount: u32,
+    posonlyargcount: u32,
     kwonlyargcount:  u32,
     nlocals:         u32,
     stacksize:       u32,
@@ -348,6 +348,7 @@ mod utils {
     }
 }
 
+#[allow(clippy::wildcard_imports)] // read::errors
 pub mod read {
     pub mod errors {
         use error_chain::error_chain;
@@ -392,6 +393,7 @@ pub mod read {
         depth: Depth,
         readable: R,
         refs: Vec<Obj>,
+        has_posonlyargcount: bool,
     }
 
     macro_rules! define_r {
@@ -492,6 +494,7 @@ pub mod read {
         Ok(set)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         let code: u8 = r_byte(p)?;
         let _depth_handle = p
@@ -547,16 +550,11 @@ pub mod read {
             Type::Tuple      => Some(Obj::Tuple(    Arc::new(r_vec(    r_long(p)? as usize, p)?))),
             Type::List       => Some(Obj::List(     Arc::new(r_vec(    r_long(p)? as usize, p)?))),
             Type::Set        => Some(Obj::Set(      Arc::new(r_hashset(r_long(p)? as usize, p)?))),
-
-            // TODO: reserve
             Type::FrozenSet  => Some(Obj::FrozenSet(Arc::new(r_hashset(r_long(p)? as usize, p)?))),
-
             Type::Dict       => Some(Obj::Dict(     Arc::new(r_hashmap(p)?))),
-
-            // TODO: reserve
             Type::Code       => Some(Obj::Code(Arc::new(Code {
                 argcount:        r_long(p)?,
-                //posonlyargcount: r_long(p)?,
+                posonlyargcount: if p.has_posonlyargcount { r_long(p)? } else { 0 },
                 kwonlyargcount:  r_long(p)?,
                 nlocals:         r_long(p)?,
                 stacksize:       r_long(p)?,
@@ -640,19 +638,39 @@ pub mod read {
         r_object(p)
     }
 
-    /// # ErrorKinds
+    #[derive(Copy, Clone, Debug)]
+    pub struct MarshalLoadExOptions {
+        pub has_posonlyargcount: bool,
+    }
+    /// Assume latest version
+    impl Default for MarshalLoadExOptions {
+        fn default() -> Self {
+            Self {
+                has_posonlyargcount: true,
+            }
+        }
+    }
+
+    /// # Errors
     /// See [`ErrorKind`].
-    pub fn marshal_load(readable: impl Read) -> Result<Option<Obj>> {
+    pub fn marshal_load_ex(readable: impl Read, opts: MarshalLoadExOptions) -> Result<Option<Obj>> {
         let mut rf = RFile {
             depth: Depth::new(),
             readable,
             refs: Vec::<Obj>::new(),
+            has_posonlyargcount: opts.has_posonlyargcount,
         };
         read_object(&mut rf)
     }
 
+    /// # Errors
+    /// See [`ErrorKind`].
+    pub fn marshal_load(readable: impl Read) -> Result<Option<Obj>> {
+        marshal_load_ex(readable, MarshalLoadExOptions::default())
+    }
+
     /// Allows coercion from array reference to slice.
-    /// # ErrorKinds
+    /// # Errors
     /// See [`ErrorKind`].
     pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
         marshal_load(bytes)
@@ -661,7 +679,7 @@ pub mod read {
     /// Ported from <https://github.com/python/cpython/blob/master/Lib/test/test_marshal.py>
     #[cfg(test)]
     mod test {
-        use super::{marshal_load, CodeFlags, Obj};
+        use super::{marshal_load, marshal_load_ex, CodeFlags, MarshalLoadExOptions, Obj};
         use num_bigint::BigInt;
         use std::io::Read;
 
@@ -826,7 +844,12 @@ pub mod read {
             // { 'co_argcount': 1, 'co_cellvars': (), 'co_code': b't\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00', 'co_consts': (None,), 'co_filename': '<string>', 'co_firstlineno': 3, 'co_flags': 67, 'co_freevars': (), 'co_kwonlyargcount': 0, 'co_lnotab': b'\x00\x01\x10\x01', 'co_name': 'test_exceptions', 'co_names': ('marshal', 'loads', 'dumps', 'StopIteration', 'assertEqual'), 'co_nlocals': 2, 'co_stacksize': 5, 'co_varnames': ('self', 'new') }
             let mut input: &[u8] = b"\xe3\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x05\x00\x00\x00C\x00\x00\x00s \x00\x00\x00t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00)\x01N)\x05\xda\x07marshal\xda\x05loads\xda\x05dumps\xda\rStopIteration\xda\x0bassertEqual)\x02\xda\x04self\xda\x03new\xa9\x00r\x08\x00\x00\x00\xda\x08<string>\xda\x0ftest_exceptions\x03\x00\x00\x00s\x04\x00\x00\x00\x00\x01\x10\x01";
             println!("{}", input.len());
-            let code_result = marshal_load(&mut input);
+            let code_result = marshal_load_ex(
+                &mut input,
+                MarshalLoadExOptions {
+                    has_posonlyargcount: false,
+                },
+            );
             println!("{}", input.len());
             let code = code_result.unwrap().unwrap().extract_code().unwrap();
 
