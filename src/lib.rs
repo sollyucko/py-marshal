@@ -351,25 +351,6 @@ mod utils {
 pub mod read {
     pub mod errors {
         use error_chain::error_chain;
-    
-    /*
-    #[allow(clippy::pub_enum_variant_names)]
-    #[derive(Debug)]
-    pub enum RawError {
-        IoError(io::Error),
-        InvalidType(u8),
-        RecursionLimitExceeded,
-        DigitOutOfRange(u16),
-        UnnormalizedLong,
-        Utf8Error(Utf8Error),
-        FromUtf8Error(FromUtf8Error),
-        ParseFloatError(ParseFloatError),
-        IsNull,
-        Unhashable(Obj),
-        TypeError,
-        InvalidRef,
-    }
-    */
 
         error_chain! {
             foreign_links {
@@ -394,17 +375,17 @@ pub mod read {
         }
     }
 
-    use crate::{utils, Code, CodeFlags, Depth, Obj, ObjHashable, Type};
     use self::errors::*;
+    use crate::{utils, Code, CodeFlags, Depth, Obj, ObjHashable, Type};
     use num_bigint::BigInt;
     use num_complex::Complex;
     use num_traits::{FromPrimitive, Zero};
     use std::{
         collections::{HashMap, HashSet},
         convert::TryFrom,
-        io::{Read},
+        io::Read,
+        str::FromStr,
         sync::Arc,
-        str::{FromStr},
     };
 
     struct RFile<R: Read> {
@@ -504,7 +485,9 @@ pub mod read {
     fn r_hashset(n: usize, p: &mut RFile<impl Read>) -> Result<HashSet<ObjHashable>> {
         let mut set = HashSet::new();
         for _ in 0..n {
-            set.insert(ObjHashable::try_from(&r_object_not_null(p)?).map_err(ErrorKind::Unhashable)?);
+            set.insert(
+                ObjHashable::try_from(&r_object_not_null(p)?).map_err(ErrorKind::Unhashable)?,
+            );
         }
         Ok(set)
     }
@@ -521,6 +504,13 @@ pub mod read {
             let type_: Type =
                 Type::from_u8(type_u8).map_or(Err(ErrorKind::InvalidType(type_u8)), Ok)?;
             (flag, type_)
+        };
+        let idx = match type_ {
+            Type::FrozenSet | Type::Code if flag => {
+                p.refs.push(Obj::None);
+                Some(p.refs.len() - 1)
+            }
+            _ => None,
         };
         #[rustfmt::skip]
         #[allow(clippy::cast_possible_wrap)]
@@ -557,8 +547,13 @@ pub mod read {
             Type::Tuple      => Some(Obj::Tuple(    Arc::new(r_vec(    r_long(p)? as usize, p)?))),
             Type::List       => Some(Obj::List(     Arc::new(r_vec(    r_long(p)? as usize, p)?))),
             Type::Set        => Some(Obj::Set(      Arc::new(r_hashset(r_long(p)? as usize, p)?))),
+
+            // TODO: reserve
             Type::FrozenSet  => Some(Obj::FrozenSet(Arc::new(r_hashset(r_long(p)? as usize, p)?))),
+
             Type::Dict       => Some(Obj::Dict(     Arc::new(r_hashmap(p)?))),
+
+            // TODO: reserve
             Type::Code       => Some(Obj::Code(Arc::new(Code {
                 argcount:        r_long(p)?,
                 //posonlyargcount: r_long(p)?,
@@ -577,9 +572,16 @@ pub mod read {
                 firstlineno:     r_long(p)?,
                 lnotab:          r_object_extract_bytes(p)?,
             }))),
+
             Type::Ref => {
                 let n = r_long(p)? as usize;
-                Some(p.refs.get(n).ok_or(ErrorKind::InvalidRef)?.clone())
+                println!("{} {} {:?}", n, p.refs.len(), p.refs);
+                let result = p.refs.get(n).ok_or(ErrorKind::InvalidRef)?.clone();
+                if result.extract_none().is_some() {
+                    return Err(ErrorKind::InvalidRef.into())
+                } else {
+                    Some(result)
+                }
             }
             Type::Unknown => return Err(ErrorKind::InvalidType(Type::Unknown as u8).into()),
         };
@@ -589,7 +591,13 @@ pub mod read {
             | Some(Obj::StopIteration)
             | Some(Obj::Ellipsis)
             | Some(Obj::Bool(_)) => {}
-            Some(ref x) if flag => p.refs.push(x.clone()),
+            Some(ref x) if flag => {
+                if let Some(i) = idx {
+                    p.refs[i] = x.clone();
+                } else {
+                    p.refs.push(x.clone());
+                }
+            }
             Some(_) => {}
         };
         Ok(retval)
@@ -642,7 +650,7 @@ pub mod read {
         };
         read_object(&mut rf)
     }
-    
+
     /// Allows coercion from array reference to slice.
     /// # ErrorKinds
     /// See [`ErrorKind`].
@@ -654,8 +662,8 @@ pub mod read {
     #[cfg(test)]
     mod test {
         use super::{marshal_load, CodeFlags, Obj};
-        use std::io::Read;
         use num_bigint::BigInt;
+        use std::io::Read;
 
         fn load_unwrap(r: impl Read) -> Obj {
             marshal_load(r).unwrap().unwrap()
