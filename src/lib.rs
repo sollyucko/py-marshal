@@ -96,7 +96,7 @@ bitflags! {
 #[derive(Clone, Debug)]
 pub struct Code {
     argcount:        u32,
-    posonlyargcount: u32,
+    //posonlyargcount: u32,
     kwonlyargcount:  u32,
     nlocals:         u32,
     stacksize:       u32,
@@ -567,7 +567,7 @@ pub mod read {
             Type::Dict       => Some(Obj::Dict(     Arc::new(r_hashmap(p)?))),
             Type::Code       => Some(Obj::Code(Arc::new(Code {
                 argcount:        r_long(p)?,
-                posonlyargcount: r_long(p)?,
+                //posonlyargcount: r_long(p)?,
                 kwonlyargcount:  r_long(p)?,
                 nlocals:         r_long(p)?,
                 stacksize:       r_long(p)?,
