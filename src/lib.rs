@@ -8,8 +8,13 @@ use std::{
     convert::TryFrom,
     hash::{Hash, Hasher},
     iter::FromIterator,
+    sync::RwLock,
     sync::Arc,
 };
+
+/// Arc = immutable
+/// ArcRwLock = mutable
+pub type ArcRwLock<T> = Arc<RwLock<T>>;
 
 #[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
 #[repr(u8)]
@@ -126,9 +131,9 @@ pub enum Obj {
     Bytes    (Arc<Vec<u8>>),
     String   (Arc<String>),
     Tuple    (Arc<Vec<Obj>>),
-    List     (Arc<Vec<Obj>>),
-    Dict     (Arc<HashMap<ObjHashable, Obj>>),
-    Set      (Arc<HashSet<ObjHashable>>),
+    List     (ArcRwLock<Vec<Obj>>),
+    Dict     (ArcRwLock<HashMap<ObjHashable, Obj>>),
+    Set      (ArcRwLock<HashSet<ObjHashable>>),
     FrozenSet(Arc<HashSet<ObjHashable>>),
     Code     (Arc<Code>),
     // etc.
@@ -154,6 +159,16 @@ macro_rules! define_extract {
             }
         }
     };
+    ($extract_fn:ident($variant:ident) -> ArcRwLock<$ret:ty>) => {
+        #[must_use]
+        pub fn $extract_fn(&self) -> Option<ArcRwLock<$ret>> {
+            if let Self::$variant(x) = self {
+                Some(Arc::clone(x))
+            } else {
+                None
+            }
+        }
+    };
     ($extract_fn:ident($variant:ident) -> $ret:ty) => {
         #[must_use]
         pub fn $extract_fn(&self) -> Option<$ret> {
@@ -166,19 +181,19 @@ macro_rules! define_extract {
     };
 }
 impl Obj {
-    define_extract! { extract_none          (None)          -> ()                             }
-    define_extract! { extract_stop_iteration(StopIteration) -> ()                             }
-    define_extract! { extract_bool          (Bool)          -> bool                           }
-    define_extract! { extract_long          (Long)          -> Arc<BigInt>                    }
-    define_extract! { extract_float         (Float)         -> f64                            }
-    define_extract! { extract_bytes         (Bytes)         -> Arc<Vec<u8>>                   }
-    define_extract! { extract_string        (String)        -> Arc<String>                    }
-    define_extract! { extract_tuple         (Tuple)         -> Arc<Vec<Self>>                 }
-    define_extract! { extract_list          (List)          -> Arc<Vec<Self>>                 }
-    define_extract! { extract_dict          (Dict)          -> Arc<HashMap<ObjHashable, Obj>> }
-    define_extract! { extract_set           (Set)           -> Arc<HashSet<ObjHashable>>      }
-    define_extract! { extract_frozenset     (FrozenSet)     -> Arc<HashSet<ObjHashable>>      }
-    define_extract! { extract_code          (Code)          -> Arc<Code>                      }
+    define_extract! { extract_none          (None)          -> ()                                   }
+    define_extract! { extract_stop_iteration(StopIteration) -> ()                                   }
+    define_extract! { extract_bool          (Bool)          -> bool                                 }
+    define_extract! { extract_long          (Long)          -> Arc<BigInt>                          }
+    define_extract! { extract_float         (Float)         -> f64                                  }
+    define_extract! { extract_bytes         (Bytes)         -> Arc<Vec<u8>>                         }
+    define_extract! { extract_string        (String)        -> Arc<String>                          }
+    define_extract! { extract_tuple         (Tuple)         -> Arc<Vec<Self>>                       }
+    define_extract! { extract_list          (List)          -> ArcRwLock<Vec<Self>>                 }
+    define_extract! { extract_dict          (Dict)          -> ArcRwLock<HashMap<ObjHashable, Obj>> }
+    define_extract! { extract_set           (Set)           -> ArcRwLock<HashSet<ObjHashable>>      }
+    define_extract! { extract_frozenset     (FrozenSet)     -> Arc<HashSet<ObjHashable>>            }
+    define_extract! { extract_code          (Code)          -> Arc<Code>                            }
 }
 
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
@@ -390,7 +405,7 @@ pub mod read {
         convert::TryFrom,
         io::Read,
         str::FromStr,
-        sync::Arc,
+        sync::{Arc, RwLock},
     };
 
     struct RFile<R: Read> {
@@ -490,12 +505,16 @@ pub mod read {
 
     fn r_hashset(n: usize, p: &mut RFile<impl Read>) -> Result<HashSet<ObjHashable>> {
         let mut set = HashSet::new();
+        r_hashset_into(&mut set, n, p)?;
+        Ok(set)
+    }
+    fn r_hashset_into(set: &mut HashSet<ObjHashable>, n: usize, p: &mut RFile<impl Read>) -> Result<()> {
         for _ in 0..n {
             set.insert(
                 ObjHashable::try_from(&r_object_not_null(p)?).map_err(ErrorKind::Unhashable)?,
             );
         }
-        Ok(set)
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -512,14 +531,7 @@ pub mod read {
                 Type::from_u8(type_u8).map_or(Err(ErrorKind::InvalidType(type_u8)), Ok)?;
             (flag, type_)
         };
-        let idx = match type_ {
-            Type::FrozenSet | Type::Code if flag => {
-                p.refs.push(Obj::None);
-                Some(p.refs.len() - 1)
-            }
-            _ => None,
-        };
-        #[rustfmt::skip]
+        let mut idx: Option<usize> = None;
         #[allow(clippy::cast_possible_wrap)]
         let retval = match type_ {
             Type::Null          => None,
@@ -540,7 +552,7 @@ pub mod read {
             Type::BinaryComplex => Some(Obj::Complex(Complex {
                 re: r_float_bin(p)?,
                 im: r_float_bin(p)?,
-            })),
+            })),            
             Type::String => {
                 Some(Obj::Bytes( Arc::new(r_bytes( r_long(p)? as usize, p)?)))
             }
@@ -552,28 +564,46 @@ pub mod read {
             }
             Type::SmallTuple => Some(Obj::Tuple(    Arc::new(r_vec(    r_byte(p)? as usize, p)?))),
             Type::Tuple      => Some(Obj::Tuple(    Arc::new(r_vec(    r_long(p)? as usize, p)?))),
-            Type::List       => Some(Obj::List(     Arc::new(r_vec(    r_long(p)? as usize, p)?))),
-            Type::Set        => Some(Obj::Set(      Arc::new(r_hashset(r_long(p)? as usize, p)?))),
-            Type::FrozenSet  => Some(Obj::FrozenSet(Arc::new(r_hashset(r_long(p)? as usize, p)?))),
-            Type::Dict       => Some(Obj::Dict(     Arc::new(r_hashmap(p)?))),
-            Type::Code       => Some(Obj::Code(Arc::new(Code {
-                argcount:        r_long(p)?,
-                posonlyargcount: if p.has_posonlyargcount { r_long(p)? } else { 0 },
-                kwonlyargcount:  r_long(p)?,
-                nlocals:         r_long(p)?,
-                stacksize:       r_long(p)?,
-                flags:           CodeFlags::from_bits_truncate(r_long(p)?),
-                code:            r_object_extract_bytes(p)?,
-                consts:          r_object_extract_tuple(p)?,
-                names:           r_object_extract_tuple_string(p)?,
-                varnames:        r_object_extract_tuple_string(p)?,
-                freevars:        r_object_extract_tuple_string(p)?,
-                cellvars:        r_object_extract_tuple_string(p)?,
-                filename:        r_object_extract_string(p)?,
-                name:            r_object_extract_string(p)?,
-                firstlineno:     r_long(p)?,
-                lnotab:          r_object_extract_bytes(p)?,
-            }))),
+            Type::List       => Some(Obj::List(     Arc::new(RwLock::new(r_vec(    r_long(p)? as usize, p)?)))),
+            Type::Set        => {
+                let set = Arc::new(RwLock::new(HashSet::new()));
+
+                idx = Some(p.refs.len());
+                p.refs.push(Obj::Set(Arc::clone(&set)));
+                
+                r_hashset_into(&mut *set.write().unwrap(), r_long(p)? as usize, p)?;
+                Some(Obj::Set(set))
+            }
+            Type::FrozenSet  => {
+                idx = Some(p.refs.len());
+                p.refs.push(Obj::None);
+                
+                Some(Obj::FrozenSet(Arc::new(r_hashset(r_long(p)? as usize, p)?)))
+            }
+            Type::Dict       => Some(Obj::Dict(     Arc::new(RwLock::new(r_hashmap(p)?)))),
+            Type::Code       => {
+                idx = Some(p.refs.len());
+                p.refs.push(Obj::None);
+
+                Some(Obj::Code(Arc::new(Code {
+                    argcount:        r_long(p)?,
+                    posonlyargcount: if p.has_posonlyargcount { r_long(p)? } else { 0 },
+                    kwonlyargcount:  r_long(p)?,
+                    nlocals:         r_long(p)?,
+                    stacksize:       r_long(p)?,
+                    flags:           CodeFlags::from_bits_truncate(r_long(p)?),
+                    code:            r_object_extract_bytes(p)?,
+                    consts:          r_object_extract_tuple(p)?,
+                    names:           r_object_extract_tuple_string(p)?,
+                    varnames:        r_object_extract_tuple_string(p)?,
+                    freevars:        r_object_extract_tuple_string(p)?,
+                    cellvars:        r_object_extract_tuple_string(p)?,
+                    filename:        r_object_extract_string(p)?,
+                    name:            r_object_extract_string(p)?,
+                    firstlineno:     r_long(p)?,
+                    lnotab:          r_object_extract_bytes(p)?,
+                })))
+            }
 
             Type::Ref => {
                 let n = r_long(p)? as usize;
@@ -687,7 +717,7 @@ pub mod read {
         use num_bigint::BigInt;
         use num_traits::Pow;
         use std::io::Read;
-        use std::sync::Arc;
+        use std::sync::{Arc, RwLock};
 
         fn load_unwrap(r: impl Read) -> Obj {
             marshal_load(r).unwrap().unwrap()
@@ -918,14 +948,16 @@ pub mod read {
 
         #[test]
         fn test_dict() {
-            let dict = loads_unwrap(b"{\xda\x07astring\xfa\x10foo@bar.baz.spam\xda\x06afloat\xe7H\xe1z\x14ns\xbc@\xda\x05anint\xe9\x00\x00\x10\x00\xda\nashortlong\xe9\x02\x00\x00\x00\xda\x05alist[\x01\x00\x00\x00\xfa\x07.zyx.41\xda\x06atuple\xa9\n\xfa\x07.zyx.41r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00\xda\x08abooleanF\xda\x08aunicode\xf5\r\x00\x00\x00Andr\xc3\xa8 Previn0").extract_dict().unwrap();
+            let dict_ref = loads_unwrap(b"{\xda\x07astring\xfa\x10foo@bar.baz.spam\xda\x06afloat\xe7H\xe1z\x14ns\xbc@\xda\x05anint\xe9\x00\x00\x10\x00\xda\nashortlong\xe9\x02\x00\x00\x00\xda\x05alist[\x01\x00\x00\x00\xfa\x07.zyx.41\xda\x06atuple\xa9\n\xfa\x07.zyx.41r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00\xda\x08abooleanF\xda\x08aunicode\xf5\r\x00\x00\x00Andr\xc3\xa8 Previn0").extract_dict().unwrap();
+            let dict = dict_ref.try_read().unwrap();
             assert_eq!(dict.len(), 8);
             assert_eq!(*dict[&ObjHashable::String(Arc::new("astring".to_owned()))].extract_string().unwrap(), "foo@bar.baz.spam");
             assert_eq!(dict[&ObjHashable::String(Arc::new("afloat".to_owned()))].extract_float().unwrap(), 7283.43_f64);
             assert_eq!(*dict[&ObjHashable::String(Arc::new("anint".to_owned()))].extract_long().unwrap(), BigInt::from(2).pow(20_u8));
             assert_eq!(*dict[&ObjHashable::String(Arc::new("ashortlong".to_owned()))].extract_long().unwrap(), BigInt::from(2));
 
-            let list = dict[&ObjHashable::String(Arc::new("alist".to_owned()))].extract_list().unwrap();
+            let list_ref = dict[&ObjHashable::String(Arc::new("alist".to_owned()))].extract_list().unwrap();
+            let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 1);
             assert_eq!(*list[0].extract_string().unwrap(), ".zyx.41");
 
