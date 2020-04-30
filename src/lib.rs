@@ -474,12 +474,6 @@ pub mod read {
         ))
     }
 
-    fn r_ref(o: &Option<Obj>, p: &mut RFile<impl Read>) {
-        if let Some(x) = o {
-            p.refs.push(x.clone());
-        }
-    }
-
     fn r_vec(n: usize, p: &mut RFile<impl Read>) -> Result<Vec<Obj>> {
         let mut vec = Vec::with_capacity(n);
         for _ in 0..n {
@@ -595,7 +589,7 @@ pub mod read {
             | Some(Obj::StopIteration)
             | Some(Obj::Ellipsis)
             | Some(Obj::Bool(_)) => {}
-            Some(_) if flag => r_ref(&retval, p),
+            Some(ref x) if flag => p.refs.push(x.clone()),
             Some(_) => {}
         };
         Ok(retval)
