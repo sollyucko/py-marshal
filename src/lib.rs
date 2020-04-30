@@ -166,15 +166,19 @@ macro_rules! define_extract {
     };
 }
 impl Obj {
-    define_extract! { extract_none          (None)          -> ()            }
-    define_extract! { extract_stop_iteration(StopIteration) -> ()            }
-    define_extract! { extract_bool          (Bool)          -> bool          }
-    define_extract! { extract_long          (Long)          -> Arc<BigInt>    }
-    define_extract! { extract_float         (Float)         -> f64           }
-    define_extract! { extract_bytes         (Bytes)         -> Arc<Vec<u8>>   }
-    define_extract! { extract_string        (String)        -> Arc<String>    }
-    define_extract! { extract_tuple         (Tuple)         -> Arc<Vec<Self>> }
-    define_extract! { extract_code          (Code)          -> Arc<Code> }
+    define_extract! { extract_none          (None)          -> ()                             }
+    define_extract! { extract_stop_iteration(StopIteration) -> ()                             }
+    define_extract! { extract_bool          (Bool)          -> bool                           }
+    define_extract! { extract_long          (Long)          -> Arc<BigInt>                    }
+    define_extract! { extract_float         (Float)         -> f64                            }
+    define_extract! { extract_bytes         (Bytes)         -> Arc<Vec<u8>>                   }
+    define_extract! { extract_string        (String)        -> Arc<String>                    }
+    define_extract! { extract_tuple         (Tuple)         -> Arc<Vec<Self>>                 }
+    define_extract! { extract_list          (List)          -> Arc<Vec<Self>>                 }
+    define_extract! { extract_dict          (Dict)          -> Arc<HashMap<ObjHashable, Obj>> }
+    define_extract! { extract_set           (Set)           -> Arc<HashSet<ObjHashable>>      }
+    define_extract! { extract_frozenset     (FrozenSet)     -> Arc<HashSet<ObjHashable>>      }
+    define_extract! { extract_code          (Code)          -> Arc<Code>                      }
 }
 
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
@@ -679,9 +683,11 @@ pub mod read {
     /// Ported from <https://github.com/python/cpython/blob/master/Lib/test/test_marshal.py>
     #[cfg(test)]
     mod test {
-        use super::{marshal_load, marshal_load_ex, CodeFlags, MarshalLoadExOptions, Obj};
+        use super::{marshal_load, marshal_load_ex, Code, CodeFlags, MarshalLoadExOptions, Obj, ObjHashable};
         use num_bigint::BigInt;
+        use num_traits::Pow;
         use std::io::Read;
+        use std::sync::Arc;
 
         fn load_unwrap(r: impl Read) -> Obj {
             marshal_load(r).unwrap().unwrap()
@@ -838,21 +844,7 @@ pub mod read {
             loads_unwrap(b"S").extract_stop_iteration().unwrap();
         }
 
-        #[test]
-        fn test_code() {
-            // ExceptionTestCase.test_exceptions
-            // { 'co_argcount': 1, 'co_cellvars': (), 'co_code': b't\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00', 'co_consts': (None,), 'co_filename': '<string>', 'co_firstlineno': 3, 'co_flags': 67, 'co_freevars': (), 'co_kwonlyargcount': 0, 'co_lnotab': b'\x00\x01\x10\x01', 'co_name': 'test_exceptions', 'co_names': ('marshal', 'loads', 'dumps', 'StopIteration', 'assertEqual'), 'co_nlocals': 2, 'co_stacksize': 5, 'co_varnames': ('self', 'new') }
-            let mut input: &[u8] = b"\xe3\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x05\x00\x00\x00C\x00\x00\x00s \x00\x00\x00t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00)\x01N)\x05\xda\x07marshal\xda\x05loads\xda\x05dumps\xda\rStopIteration\xda\x0bassertEqual)\x02\xda\x04self\xda\x03new\xa9\x00r\x08\x00\x00\x00\xda\x08<string>\xda\x0ftest_exceptions\x03\x00\x00\x00s\x04\x00\x00\x00\x00\x01\x10\x01";
-            println!("{}", input.len());
-            let code_result = marshal_load_ex(
-                &mut input,
-                MarshalLoadExOptions {
-                    has_posonlyargcount: false,
-                },
-            );
-            println!("{}", input.len());
-            let code = code_result.unwrap().unwrap().extract_code().unwrap();
-
+        fn assert_test_exceptions_code_valid(code: &Code) {
             assert_eq!(code.argcount, 1);
             assert!(code.cellvars.is_empty());
             assert_eq!(*code.code, b"t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00");
@@ -875,6 +867,75 @@ pub mod read {
             assert_eq!(code.nlocals, 2);
             assert_eq!(code.stacksize, 5);
             assert_eq!(*code.varnames, vec!["self", "new"]);
+        }
+
+        #[test]
+        fn test_code() {
+            // ExceptionTestCase.test_exceptions
+            // { 'co_argcount': 1, 'co_cellvars': (), 'co_code': b't\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00', 'co_consts': (None,), 'co_filename': '<string>', 'co_firstlineno': 3, 'co_flags': 67, 'co_freevars': (), 'co_kwonlyargcount': 0, 'co_lnotab': b'\x00\x01\x10\x01', 'co_name': 'test_exceptions', 'co_names': ('marshal', 'loads', 'dumps', 'StopIteration', 'assertEqual'), 'co_nlocals': 2, 'co_stacksize': 5, 'co_varnames': ('self', 'new') }
+            let mut input: &[u8] = b"\xe3\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x05\x00\x00\x00C\x00\x00\x00s \x00\x00\x00t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00)\x01N)\x05\xda\x07marshal\xda\x05loads\xda\x05dumps\xda\rStopIteration\xda\x0bassertEqual)\x02\xda\x04self\xda\x03new\xa9\x00r\x08\x00\x00\x00\xda\x08<string>\xda\x0ftest_exceptions\x03\x00\x00\x00s\x04\x00\x00\x00\x00\x01\x10\x01";
+            println!("{}", input.len());
+            let code_result = marshal_load_ex(
+                &mut input,
+                MarshalLoadExOptions {
+                    has_posonlyargcount: false,
+                },
+            );
+            println!("{}", input.len());
+            let code = code_result.unwrap().unwrap().extract_code().unwrap();
+            assert_test_exceptions_code_valid(&code);
+        }
+
+        #[test]
+        fn test_many_codeobjects() {
+            let mut input: &[u8] = &[b"(\x88\x13\x00\x00\xe3\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x05\x00\x00\x00C\x00\x00\x00s \x00\x00\x00t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00)\x01N)\x05\xda\x07marshal\xda\x05loads\xda\x05dumps\xda\rStopIteration\xda\x0bassertEqual)\x02\xda\x04self\xda\x03new\xa9\x00r\x08\x00\x00\x00\xda\x08<string>\xda\x0ftest_exceptions\x03\x00\x00\x00s\x04\x00\x00\x00\x00\x01\x10\x01" as &[u8], &b"r\x00\x00\x00\x00".repeat(4999)].concat();
+            let result = marshal_load_ex(
+                &mut input,
+                MarshalLoadExOptions {
+                    has_posonlyargcount: false,
+                },
+            );
+            let tuple = result.unwrap().unwrap().extract_tuple().unwrap();
+            for o in &*tuple {
+                assert_test_exceptions_code_valid(&o.extract_code().unwrap());
+            }
+        }
+
+        #[test]
+        fn test_different_filenames() {
+            let mut input: &[u8] = b")\x02c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00@\x00\x00\x00s\x08\x00\x00\x00e\x00\x01\x00d\x00S\x00)\x01N)\x01\xda\x01x\xa9\x00r\x01\x00\x00\x00r\x01\x00\x00\x00\xda\x02f1\xda\x08<module>\x01\x00\x00\x00\xf3\x00\x00\x00\x00c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00@\x00\x00\x00s\x08\x00\x00\x00e\x00\x01\x00d\x00S\x00)\x01N)\x01\xda\x01yr\x01\x00\x00\x00r\x01\x00\x00\x00r\x01\x00\x00\x00\xda\x02f2r\x03\x00\x00\x00\x01\x00\x00\x00r\x04\x00\x00\x00";
+            let result = marshal_load_ex(
+                &mut input,
+                MarshalLoadExOptions {
+                    has_posonlyargcount: false,
+                },
+            );
+            let tuple = result.unwrap().unwrap().extract_tuple().unwrap();
+            assert_eq!(tuple.len(), 2);
+            assert_eq!(*tuple[0].extract_code().unwrap().filename, "f1");
+            assert_eq!(*tuple[1].extract_code().unwrap().filename, "f2");
+        }
+
+        #[test]
+        fn test_dict() {
+            let dict = loads_unwrap(b"{\xda\x07astring\xfa\x10foo@bar.baz.spam\xda\x06afloat\xe7H\xe1z\x14ns\xbc@\xda\x05anint\xe9\x00\x00\x10\x00\xda\nashortlong\xe9\x02\x00\x00\x00\xda\x05alist[\x01\x00\x00\x00\xfa\x07.zyx.41\xda\x06atuple\xa9\n\xfa\x07.zyx.41r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00r\x0c\x00\x00\x00\xda\x08abooleanF\xda\x08aunicode\xf5\r\x00\x00\x00Andr\xc3\xa8 Previn0").extract_dict().unwrap();
+            assert_eq!(dict.len(), 8);
+            assert_eq!(*dict[&ObjHashable::String(Arc::new("astring".to_owned()))].extract_string().unwrap(), "foo@bar.baz.spam");
+            assert_eq!(dict[&ObjHashable::String(Arc::new("afloat".to_owned()))].extract_float().unwrap(), 7283.43_f64);
+            assert_eq!(*dict[&ObjHashable::String(Arc::new("anint".to_owned()))].extract_long().unwrap(), BigInt::from(2).pow(20_u8));
+            assert_eq!(*dict[&ObjHashable::String(Arc::new("ashortlong".to_owned()))].extract_long().unwrap(), BigInt::from(2));
+
+            let list = dict[&ObjHashable::String(Arc::new("alist".to_owned()))].extract_list().unwrap();
+            assert_eq!(list.len(), 1);
+            assert_eq!(*list[0].extract_string().unwrap(), ".zyx.41");
+
+            let tuple = dict[&ObjHashable::String(Arc::new("atuple".to_owned()))].extract_tuple().unwrap();
+            assert_eq!(tuple.len(), 10);
+            for o in &*tuple {
+                assert_eq!(*o.extract_string().unwrap(), ".zyx.41");
+            }
+            assert_eq!(dict[&ObjHashable::String(Arc::new("aboolean".to_owned()))].extract_bool().unwrap(), false);
+            assert_eq!(*dict[&ObjHashable::String(Arc::new("aunicode".to_owned()))].extract_string().unwrap(), "Andr\u{e8} Previn");
         }
     }
 }
