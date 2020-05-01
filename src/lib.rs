@@ -702,11 +702,15 @@ pub mod read {
     #[cfg(test)]
     mod test {
         use super::{
-            marshal_load, marshal_load_ex, Code, CodeFlags, MarshalLoadExOptions, Obj, ObjHashable,
+            errors, marshal_load, marshal_load_ex, marshal_loads, Code, CodeFlags,
+            MarshalLoadExOptions, Obj, ObjHashable,
         };
         use num_bigint::BigInt;
         use num_traits::Pow;
-        use std::{io::Read, sync::Arc};
+        use std::{
+            io::{self, Read},
+            sync::Arc,
+        };
 
         fn load_unwrap(r: impl Read) -> Obj {
             marshal_load(r).unwrap().unwrap()
@@ -1027,6 +1031,28 @@ pub mod read {
             let frozenset = loads_unwrap(b">\x08\x00\x00\x00\xda\x06atuple\xda\x08aunicode\xda\x05anint\xda\x08aboolean\xda\x06afloat\xda\x05alist\xda\nashortlong\xda\x07astring").extract_frozenset().unwrap();
             assert_eq!(frozenset.len(), 8);
             // TODO: check values
+        }
+
+        // TODO: test_bytearray, test_memoryview, test_array
+
+        #[test]
+        fn test_patch_873224() {
+            assert!(marshal_loads(b"0").unwrap().is_none());
+            let f_err = marshal_loads(b"f").unwrap_err();
+            match f_err.kind() {
+                errors::ErrorKind::Io(io_err) => {
+                    assert_eq!(io_err.kind(), io::ErrorKind::UnexpectedEof);
+                }
+                _ => panic!(),
+            }
+            let int_err =
+                marshal_loads(b"l\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00 ").unwrap_err();
+            match int_err.kind() {
+                errors::ErrorKind::Io(io_err) => {
+                    assert_eq!(io_err.kind(), io::ErrorKind::UnexpectedEof);
+                }
+                _ => panic!(),
+            }
         }
     }
 }
