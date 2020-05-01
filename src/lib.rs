@@ -1000,6 +1000,24 @@ pub mod read {
             );
         }
 
+        /// Tests hash implementation
+        #[test]
+        fn test_dict_tuple_key() {
+            let dict = loads_unwrap(b"{\xa9\x02\xda\x01a\xda\x01b\xda\x01c0")
+                .extract_dict()
+                .unwrap();
+            assert_eq!(dict.read().unwrap().len(), 1);
+            assert_eq!(
+                *dict.read().unwrap()[&ObjHashable::Tuple(Arc::new(vec![
+                    ObjHashable::String(Arc::new("a".to_owned())),
+                    ObjHashable::String(Arc::new("b".to_owned()))
+                ]))]
+                    .extract_string()
+                    .unwrap(),
+                "c"
+            );
+        }
+
         // TODO: test_list and test_tuple
 
         #[test]
