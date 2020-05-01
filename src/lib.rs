@@ -1,4 +1,4 @@
-/// Ported from <https://github.com/python/cpython/blob/master/Python/marshal.c>
+// Ported from <https://github.com/python/cpython/blob/master/Python/marshal.c>
 use bitflags::bitflags;
 use num_bigint::BigInt;
 use num_complex::Complex;
@@ -6,6 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
+    fmt,
     hash::{Hash, Hasher},
     iter::FromIterator,
     sync::{Arc, RwLock},
@@ -54,7 +55,7 @@ impl Type {
 
 struct Depth(Arc<()>);
 impl Depth {
-    const MAX: usize = 2000;
+    const MAX: usize = 900;
 
     #[must_use]
     pub fn new() -> Self {
@@ -67,6 +68,13 @@ impl Depth {
         } else {
             Some(Self(self.0.clone()))
         }
+    }
+}
+impl fmt::Debug for Depth {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        f.debug_tuple("Depth")
+            .field(&Arc::strong_count(&self.0))
+            .finish()
     }
 }
 
@@ -506,10 +514,11 @@ pub mod read {
     #[allow(clippy::too_many_lines)]
     fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         let code: u8 = r_byte(p)?;
-        let _depth_handle = p
+        let depth_handle = p
             .depth
             .try_clone()
             .map_or(Err(ErrorKind::RecursionLimitExceeded), Ok)?;
+        println!("{:?}", depth_handle);
         let (flag, type_) = {
             let flag: bool = (code & Type::FLAG_REF) != 0;
             let type_u8: u8 = code & !Type::FLAG_REF;
@@ -711,6 +720,15 @@ pub mod read {
             io::{self, Read},
             sync::Arc,
         };
+
+        macro_rules! assert_match {
+            ($expr:expr, $pat:pat) => {
+                match $expr {
+                    $pat => {}
+                    _ => panic!(),
+                }
+            }
+        }
 
         fn load_unwrap(r: impl Read) -> Obj {
             marshal_load(r).unwrap().unwrap()
@@ -1053,6 +1071,30 @@ pub mod read {
                 }
                 _ => panic!(),
             }
+        }
+
+        #[test]
+        fn test_fuzz() {
+            for i in 0..=u8::MAX {
+                println!("{:?}", marshal_loads(&[i]));
+            }
+        }
+        
+        /// Warning: this has to be run on a release build to avoid a stack overflow.
+        #[cfg(not(debug_assertions))]
+        #[test]
+        fn test_loads_recursion() {
+            loads_unwrap(&[&b")\x01".repeat(100)[..], b"N"].concat());
+            loads_unwrap(&[&b"(\x01\x00\x00\x00".repeat(100)[..], b"N"].concat());
+            loads_unwrap(&[&b"[\x01\x00\x00\x00".repeat(100)[..], b"N"].concat());
+            loads_unwrap(&[&b"{N".repeat(100)[..], b"N", &b"0".repeat(100)[..]].concat());
+            loads_unwrap(&[&b">\x01\x00\x00\x00".repeat(100)[..], b"N"].concat());
+
+            assert_match!(marshal_loads(&[&b")\x01".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
+            assert_match!(marshal_loads(&[&b"(\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
+            assert_match!(marshal_loads(&[&b"[\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
+            assert_match!(marshal_loads(&[&b"{N".repeat(1048576)[..], b"N", &b"0".repeat(1048576)[..]].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
+            assert_match!(marshal_loads(&[&b">\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
         }
     }
 }
