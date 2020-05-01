@@ -999,5 +999,16 @@ pub mod read {
                 "Andr\u{e8} Previn"
             );
         }
+
+        // TODO: test_list and test_tuple
+
+        #[test]
+        fn test_sets() {
+            let set = loads_unwrap(b"<\x08\x00\x00\x00\xda\x05alist\xda\x08aboolean\xda\x07astring\xda\x08aunicode\xda\x06afloat\xda\x05anint\xda\x06atuple\xda\nashortlong").extract_set().unwrap();
+            assert_eq!(set.read().unwrap().len(), 8);
+            let frozenset = loads_unwrap(b">\x08\x00\x00\x00\xda\x06atuple\xda\x08aunicode\xda\x05anint\xda\x08aboolean\xda\x06afloat\xda\x05alist\xda\nashortlong\xda\x07astring").extract_frozenset().unwrap();
+            assert_eq!(frozenset.len(), 8);
+            // TODO: check values
+        }
     }
 }
