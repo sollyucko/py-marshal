@@ -727,7 +727,7 @@ pub mod read {
                     $pat => {}
                     _ => panic!(),
                 }
-            }
+            };
         }
 
         fn load_unwrap(r: impl Read) -> Obj {
@@ -1079,7 +1079,7 @@ pub mod read {
                 println!("{:?}", marshal_loads(&[i]));
             }
         }
-        
+
         /// Warning: this has to be run on a release build to avoid a stack overflow.
         #[cfg(not(debug_assertions))]
         #[test]
@@ -1090,11 +1090,48 @@ pub mod read {
             loads_unwrap(&[&b"{N".repeat(100)[..], b"N", &b"0".repeat(100)[..]].concat());
             loads_unwrap(&[&b">\x01\x00\x00\x00".repeat(100)[..], b"N"].concat());
 
-            assert_match!(marshal_loads(&[&b")\x01".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
-            assert_match!(marshal_loads(&[&b"(\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
-            assert_match!(marshal_loads(&[&b"[\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
-            assert_match!(marshal_loads(&[&b"{N".repeat(1048576)[..], b"N", &b"0".repeat(1048576)[..]].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
-            assert_match!(marshal_loads(&[&b">\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat()).unwrap_err().kind(), errors::ErrorKind::RecursionLimitExceeded);
+            assert_match!(
+                marshal_loads(&[&b")\x01".repeat(1048576)[..], b"N"].concat())
+                    .unwrap_err()
+                    .kind(),
+                errors::ErrorKind::RecursionLimitExceeded
+            );
+            assert_match!(
+                marshal_loads(&[&b"(\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat())
+                    .unwrap_err()
+                    .kind(),
+                errors::ErrorKind::RecursionLimitExceeded
+            );
+            assert_match!(
+                marshal_loads(&[&b"[\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat())
+                    .unwrap_err()
+                    .kind(),
+                errors::ErrorKind::RecursionLimitExceeded
+            );
+            assert_match!(
+                marshal_loads(
+                    &[&b"{N".repeat(1048576)[..], b"N", &b"0".repeat(1048576)[..]].concat()
+                )
+                .unwrap_err()
+                .kind(),
+                errors::ErrorKind::RecursionLimitExceeded
+            );
+            assert_match!(
+                marshal_loads(&[&b">\x01\x00\x00\x00".repeat(1048576)[..], b"N"].concat())
+                    .unwrap_err()
+                    .kind(),
+                errors::ErrorKind::RecursionLimitExceeded
+            );
+        }
+
+        #[test]
+        fn test_invalid_longs() {
+            assert_match!(
+                marshal_loads(b"l\x02\x00\x00\x00\x00\x00\x00\x00")
+                    .unwrap_err()
+                    .kind(),
+                errors::ErrorKind::UnnormalizedLong
+            );
         }
     }
 }
