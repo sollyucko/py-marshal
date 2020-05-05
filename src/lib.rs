@@ -115,10 +115,10 @@ pub struct Code {
     flags:           CodeFlags,
     code:            Arc<Vec<u8>>,
     consts:          Arc<Vec<Obj>>,
-    names:           Arc<Vec<String>>,
-    varnames:        Arc<Vec<String>>,
-    freevars:        Arc<Vec<String>>,
-    cellvars:        Arc<Vec<String>>,
+    names:           Vec<Arc<String>>,
+    varnames:        Vec<Arc<String>>,
+    freevars:        Vec<Arc<String>>,
+    cellvars:        Vec<Arc<String>>,
     filename:        Arc<String>,
     name:            Arc<String>,
     firstlineno:     u32,
@@ -150,22 +150,36 @@ macro_rules! define_extract {
         define_extract! { $extract_fn -> () { $variant => () } }
     };
     ($extract_fn:ident($variant:ident) -> Arc<$ret:ty>) => {
-        define_extract! { $extract_fn -> Arc<$ret> { $variant(x) => Arc::clone(x) } }
+        define_extract! { $extract_fn -> Arc<$ret> { $variant(x) => x } }
     };
     ($extract_fn:ident($variant:ident) -> ArcRwLock<$ret:ty>) => {
-        define_extract! { $extract_fn -> ArcRwLock<$ret> { $variant(x) => Arc::clone(x) } }
+        define_extract! { $extract_fn -> ArcRwLock<$ret> { $variant(x) => x } }
     };
     ($extract_fn:ident($variant:ident) -> $ret:ty) => {
-        define_extract! { $extract_fn -> $ret { $variant(x) => *x } }
+        define_extract! { $extract_fn -> $ret { $variant(x) => x } }
     };
     ($extract_fn:ident -> $ret:ty { $variant:ident$(($($pat:pat),+))? => $expr:expr }) => {
         /// # Errors
         /// Returns a reference to self if extraction fails
-        pub fn $extract_fn(&self) -> Result<$ret, &Self> {
+        pub fn $extract_fn(self) -> Result<$ret, Self> {
             if let Self::$variant$(($($pat),+))? = self {
                 Ok($expr)
             } else {
                 Err(self)
+            }
+        }
+    }
+}
+macro_rules! define_is {
+    ($is_fn:ident($variant:ident$(($($pat:pat),+))?)) => {
+        /// # Errors
+        /// Returns a reference to self if extraction fails
+        #[must_use]
+        pub fn $is_fn(&self) -> bool {
+            if let Self::$variant$(($($pat),+))? = self {
+                true
+            } else {
+                false
             }
         }
     }
@@ -184,6 +198,20 @@ impl Obj {
     define_extract! { extract_set           (Set)           -> ArcRwLock<HashSet<ObjHashable>>       }
     define_extract! { extract_frozenset     (FrozenSet)     -> Arc<HashSet<ObjHashable>>             }
     define_extract! { extract_code          (Code)          -> Arc<Code>                             }
+
+    define_is! { is_none          (None)          }
+    define_is! { is_stop_iteration(StopIteration) }
+    define_is! { is_bool          (Bool(_))       }
+    define_is! { is_long          (Long(_))       }
+    define_is! { is_float         (Float(_))      }
+    define_is! { is_bytes         (Bytes(_))      }
+    define_is! { is_string        (String(_))     }
+    define_is! { is_tuple         (Tuple(_))      }
+    define_is! { is_list          (List(_))       }
+    define_is! { is_dict          (Dict(_))       }
+    define_is! { is_set           (Set(_))        }
+    define_is! { is_frozenset     (FrozenSet(_))  }
+    define_is! { is_code          (Code(_))       }
 }
 
 /// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
@@ -605,7 +633,7 @@ pub mod read {
                 let n = r_long(p)? as usize;
                 println!("{} {} {:?}", n, p.refs.len(), p.refs);
                 let result = p.refs.get(n).ok_or(ErrorKind::InvalidRef)?.clone();
-                if result.extract_none().is_ok() {
+                if result.is_none() {
                     return Err(ErrorKind::InvalidRef.into());
                 } else {
                     Some(result)
@@ -636,33 +664,27 @@ pub mod read {
     fn r_object_extract_string(p: &mut RFile<impl Read>) -> Result<Arc<String>> {
         Ok(r_object_not_null(p)?
             .extract_string()
-            .map_err(Obj::clone)
             .map_err(ErrorKind::TypeError)?)
     }
     fn r_object_extract_bytes(p: &mut RFile<impl Read>) -> Result<Arc<Vec<u8>>> {
         Ok(r_object_not_null(p)?
             .extract_bytes()
-            .map_err(Obj::clone)
             .map_err(ErrorKind::TypeError)?)
     }
     fn r_object_extract_tuple(p: &mut RFile<impl Read>) -> Result<Arc<Vec<Obj>>> {
         Ok(r_object_not_null(p)?
             .extract_tuple()
-            .map_err(Obj::clone)
             .map_err(ErrorKind::TypeError)?)
     }
-    fn r_object_extract_tuple_string(p: &mut RFile<impl Read>) -> Result<Arc<Vec<String>>> {
-        Ok(Arc::new(
-            r_object_extract_tuple(p)?
-                .iter()
-                .map(|x| {
-                    x.extract_string()
-                        .as_ref()
-                        .map(|s: &Arc<String>| (**s).clone())
-                        .map_err(|o: &&Obj| Error::from(ErrorKind::TypeError(Obj::clone(*o))))
-                })
-                .collect::<Result<Vec<String>>>()?,
-        ))
+    fn r_object_extract_tuple_string(p: &mut RFile<impl Read>) -> Result<Vec<Arc<String>>> {
+        Ok(r_object_extract_tuple(p)?
+            .iter()
+            .map(|x| {
+                x.clone()
+                    .extract_string()
+                    .map_err(|o: Obj| Error::from(ErrorKind::TypeError(o)))
+            })
+            .collect::<Result<Vec<Arc<String>>>>()?)
     }
 
     fn read_object(p: &mut RFile<impl Read>) -> Result<Obj> {
@@ -707,7 +729,7 @@ pub mod read {
         marshal_load(bytes)
     }
 
-    /// Ported from <https://github.com/python/cpython/blob/master/Lib/test/test_marshal.py>
+    // Ported from <https://github.com/python/cpython/blob/master/Lib/test/test_marshal.py>
     #[cfg(test)]
     mod test {
         use super::{
@@ -718,6 +740,7 @@ pub mod read {
         use num_traits::Pow;
         use std::{
             io::{self, Read},
+            ops::Deref,
             sync::Arc,
         };
 
@@ -890,7 +913,7 @@ pub mod read {
             assert!(code.cellvars.is_empty());
             assert_eq!(*code.code, b"t\x00\xa0\x01t\x00\xa0\x02t\x03\xa1\x01\xa1\x01}\x01|\x00\xa0\x04t\x03|\x01\xa1\x02\x01\x00d\x00S\x00");
             assert_eq!(code.consts.len(), 1);
-            code.consts[0].extract_none().unwrap();
+            assert!(code.consts[0].is_none());
             assert_eq!(*code.filename, "<string>");
             assert_eq!(code.firstlineno, 3);
             assert_eq!(
@@ -901,13 +924,21 @@ pub mod read {
             assert_eq!(code.kwonlyargcount, 0);
             assert_eq!(*code.lnotab, b"\x00\x01\x10\x01");
             assert_eq!(*code.name, "test_exceptions");
-            assert_eq!(
-                *code.names,
-                vec!["marshal", "loads", "dumps", "StopIteration", "assertEqual"]
-            );
+            assert!(code.names.iter().map(Deref::deref).eq(vec![
+                "marshal",
+                "loads",
+                "dumps",
+                "StopIteration",
+                "assertEqual"
+            ]
+            .iter()));
             assert_eq!(code.nlocals, 2);
             assert_eq!(code.stacksize, 5);
-            assert_eq!(*code.varnames, vec!["self", "new"]);
+            assert!(code
+                .varnames
+                .iter()
+                .map(Deref::deref)
+                .eq(vec!["self", "new"].iter()));
         }
 
         #[test]
@@ -938,7 +969,7 @@ pub mod read {
             );
             let tuple = result.unwrap().extract_tuple().unwrap();
             for o in &*tuple {
-                assert_test_exceptions_code_valid(&o.extract_code().unwrap());
+                assert_test_exceptions_code_valid(&o.clone().extract_code().unwrap());
             }
         }
 
@@ -955,8 +986,8 @@ pub mod read {
             println!("{}", input.len());
             let tuple = result.unwrap().extract_tuple().unwrap();
             assert_eq!(tuple.len(), 2);
-            assert_eq!(*tuple[0].extract_code().unwrap().filename, "f1");
-            assert_eq!(*tuple[1].extract_code().unwrap().filename, "f2");
+            assert_eq!(*tuple[0].clone().extract_code().unwrap().filename, "f1");
+            assert_eq!(*tuple[1].clone().extract_code().unwrap().filename, "f2");
         }
 
         #[allow(clippy::float_cmp)]
@@ -971,51 +1002,59 @@ pub mod read {
             assert_eq!(dict.len(), 8);
             assert_eq!(
                 *dict[&ObjHashable::String(Arc::new("astring".to_owned()))]
+                    .clone()
                     .extract_string()
                     .unwrap(),
                 "foo@bar.baz.spam"
             );
             assert_eq!(
                 dict[&ObjHashable::String(Arc::new("afloat".to_owned()))]
+                    .clone()
                     .extract_float()
                     .unwrap(),
                 7283.43_f64
             );
             assert_eq!(
                 *dict[&ObjHashable::String(Arc::new("anint".to_owned()))]
+                    .clone()
                     .extract_long()
                     .unwrap(),
                 BigInt::from(2).pow(20_u8)
             );
             assert_eq!(
                 *dict[&ObjHashable::String(Arc::new("ashortlong".to_owned()))]
+                    .clone()
                     .extract_long()
                     .unwrap(),
                 BigInt::from(2)
             );
 
             let list_ref = dict[&ObjHashable::String(Arc::new("alist".to_owned()))]
+                .clone()
                 .extract_list()
                 .unwrap();
             let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 1);
-            assert_eq!(*list[0].extract_string().unwrap(), ".zyx.41");
+            assert_eq!(*list[0].clone().extract_string().unwrap(), ".zyx.41");
 
             let tuple = dict[&ObjHashable::String(Arc::new("atuple".to_owned()))]
+                .clone()
                 .extract_tuple()
                 .unwrap();
             assert_eq!(tuple.len(), 10);
             for o in &*tuple {
-                assert_eq!(*o.extract_string().unwrap(), ".zyx.41");
+                assert_eq!(*o.clone().extract_string().unwrap(), ".zyx.41");
             }
             assert_eq!(
                 dict[&ObjHashable::String(Arc::new("aboolean".to_owned()))]
+                    .clone()
                     .extract_bool()
                     .unwrap(),
                 false
             );
             assert_eq!(
                 *dict[&ObjHashable::String(Arc::new("aunicode".to_owned()))]
+                    .clone()
                     .extract_string()
                     .unwrap(),
                 "Andr\u{e8} Previn"
@@ -1034,6 +1073,7 @@ pub mod read {
                     ObjHashable::String(Arc::new("a".to_owned())),
                     ObjHashable::String(Arc::new("b".to_owned()))
                 ]))]
+                    .clone()
                     .extract_string()
                     .unwrap(),
                 "c"
