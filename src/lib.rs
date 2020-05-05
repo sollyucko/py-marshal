@@ -665,8 +665,8 @@ pub mod read {
         ))
     }
 
-    fn read_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
-        r_object(p)
+    fn read_object(p: &mut RFile<impl Read>) -> Result<Obj> {
+        r_object_not_null(p)
     }
 
     #[derive(Copy, Clone, Debug)]
@@ -684,7 +684,7 @@ pub mod read {
 
     /// # Errors
     /// See [`ErrorKind`].
-    pub fn marshal_load_ex(readable: impl Read, opts: MarshalLoadExOptions) -> Result<Option<Obj>> {
+    pub fn marshal_load_ex(readable: impl Read, opts: MarshalLoadExOptions) -> Result<Obj> {
         let mut rf = RFile {
             depth: Depth::new(),
             readable,
@@ -696,14 +696,14 @@ pub mod read {
 
     /// # Errors
     /// See [`ErrorKind`].
-    pub fn marshal_load(readable: impl Read) -> Result<Option<Obj>> {
+    pub fn marshal_load(readable: impl Read) -> Result<Obj> {
         marshal_load_ex(readable, MarshalLoadExOptions::default())
     }
 
     /// Allows coercion from array reference to slice.
     /// # Errors
     /// See [`ErrorKind`].
-    pub fn marshal_loads(bytes: &[u8]) -> Result<Option<Obj>> {
+    pub fn marshal_loads(bytes: &[u8]) -> Result<Obj> {
         marshal_load(bytes)
     }
 
@@ -731,7 +731,7 @@ pub mod read {
         }
 
         fn load_unwrap(r: impl Read) -> Obj {
-            marshal_load(r).unwrap().unwrap()
+            marshal_load(r).unwrap()
         }
 
         fn loads_unwrap(s: &[u8]) -> Obj {
@@ -923,7 +923,7 @@ pub mod read {
                 },
             );
             println!("{}", input.len());
-            let code = code_result.unwrap().unwrap().extract_code().unwrap();
+            let code = code_result.unwrap().extract_code().unwrap();
             assert_test_exceptions_code_valid(&code);
         }
 
@@ -936,7 +936,7 @@ pub mod read {
                     has_posonlyargcount: false,
                 },
             );
-            let tuple = result.unwrap().unwrap().extract_tuple().unwrap();
+            let tuple = result.unwrap().extract_tuple().unwrap();
             for o in &*tuple {
                 assert_test_exceptions_code_valid(&o.extract_code().unwrap());
             }
@@ -953,7 +953,7 @@ pub mod read {
                 },
             );
             println!("{}", input.len());
-            let tuple = result.unwrap().unwrap().extract_tuple().unwrap();
+            let tuple = result.unwrap().extract_tuple().unwrap();
             assert_eq!(tuple.len(), 2);
             assert_eq!(*tuple[0].extract_code().unwrap().filename, "f1");
             assert_eq!(*tuple[1].extract_code().unwrap().filename, "f2");
@@ -966,7 +966,7 @@ pub mod read {
             println!("{}", input.len());
             let result = marshal_load(&mut input);
             println!("{}", input.len());
-            let dict_ref = result.unwrap().unwrap().extract_dict().unwrap();
+            let dict_ref = result.unwrap().extract_dict().unwrap();
             let dict = dict_ref.try_read().unwrap();
             assert_eq!(dict.len(), 8);
             assert_eq!(
@@ -1055,7 +1055,10 @@ pub mod read {
 
         #[test]
         fn test_patch_873224() {
-            assert!(marshal_loads(b"0").unwrap().is_none());
+            assert_match!(
+                marshal_loads(b"0").unwrap_err().kind(),
+                errors::ErrorKind::IsNull
+            );
             let f_err = marshal_loads(b"f").unwrap_err();
             match f_err.kind() {
                 errors::ErrorKind::Io(io_err) => {
