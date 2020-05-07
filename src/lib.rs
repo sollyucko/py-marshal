@@ -546,7 +546,6 @@ pub mod read {
             .depth
             .try_clone()
             .map_or(Err(ErrorKind::RecursionLimitExceeded), Ok)?;
-        println!("{:?}", depth_handle);
         let (flag, type_) = {
             let flag: bool = (code & Type::FLAG_REF) != 0;
             let type_u8: u8 = code & !Type::FLAG_REF;
@@ -631,7 +630,6 @@ pub mod read {
 
             Type::Ref => {
                 let n = r_long(p)? as usize;
-                println!("{} {} {:?}", n, p.refs.len(), p.refs);
                 let result = p.refs.get(n).ok_or(ErrorKind::InvalidRef)?.clone();
                 if result.is_none() {
                     return Err(ErrorKind::InvalidRef.into());
