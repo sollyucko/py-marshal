@@ -542,7 +542,7 @@ pub mod read {
     #[allow(clippy::too_many_lines)]
     fn r_object(p: &mut RFile<impl Read>) -> Result<Option<Obj>> {
         let code: u8 = r_byte(p)?;
-        let depth_handle = p
+        let _depth_handle = p
             .depth
             .try_clone()
             .map_or(Err(ErrorKind::RecursionLimitExceeded), Ok)?;
