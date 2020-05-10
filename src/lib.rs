@@ -107,22 +107,22 @@ bitflags! {
 #[rustfmt::skip]
 #[derive(Clone, Debug)]
 pub struct Code {
-    argcount:        u32,
-    posonlyargcount: u32,
-    kwonlyargcount:  u32,
-    nlocals:         u32,
-    stacksize:       u32,
-    flags:           CodeFlags,
-    code:            Arc<Vec<u8>>,
-    consts:          Arc<Vec<Obj>>,
-    names:           Vec<Arc<String>>,
-    varnames:        Vec<Arc<String>>,
-    freevars:        Vec<Arc<String>>,
-    cellvars:        Vec<Arc<String>>,
-    filename:        Arc<String>,
-    name:            Arc<String>,
-    firstlineno:     u32,
-    lnotab:          Arc<Vec<u8>>,
+    pub argcount:        u32,
+    pub posonlyargcount: u32,
+    pub kwonlyargcount:  u32,
+    pub nlocals:         u32,
+    pub stacksize:       u32,
+    pub flags:           CodeFlags,
+    pub code:            Arc<Vec<u8>>,
+    pub consts:          Arc<Vec<Obj>>,
+    pub names:           Vec<Arc<String>>,
+    pub varnames:        Vec<Arc<String>>,
+    pub freevars:        Vec<Arc<String>>,
+    pub cellvars:        Vec<Arc<String>>,
+    pub filename:        Arc<String>,
+    pub name:            Arc<String>,
+    pub firstlineno:     u32,
+    pub lnotab:          Arc<Vec<u8>>,
 }
 
 #[rustfmt::skip]
