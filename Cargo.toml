@@ -1,6 +1,6 @@
 [package]
 name = "py-marshal"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Solomon Ucko <solly.ucko@gmail.com>"]
 edition = "2018"
 description = "A Rust port of https://github.com/python/cpython/blob/master/Python/marshal.c"
@@ -17,3 +17,4 @@ num-derive = "0.3"
 num-bigint = "0.2"
 num-complex = "0.2"
 error-chain = "0.12"
+owning_ref = { version = "0.4", optional = true }
