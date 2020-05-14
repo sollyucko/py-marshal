@@ -125,17 +125,6 @@ pub struct Code {
     pub lnotab:          Arc<Vec<u8>>,
 }
 
-#[cfg(owning_ref)]
-use owning_ref::OwningRef;
-#[cfg(owning_ref)]
-impl<T: Iterator> Iterator for OwningRef<Arc<Code>, T> {
-    type Item = T::Item;
-
-    fn next(&mut self) -> Option<T::Item> {
-        self.next()
-    }
-}
-
 #[rustfmt::skip]
 #[derive(Clone, Debug)]
 pub enum Obj {
