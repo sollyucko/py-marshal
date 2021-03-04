@@ -891,8 +891,9 @@ pub mod read {
             (flag, type_)
         };
         let mut idx: Option<usize> = match type_ {
-            // immutable collections
-            Type::SmallTuple | Type::Tuple | Type::FrozenSet | Type::Code if flag => {
+            // R_REF/r_ref_reserve before reading contents
+            // See https://github.com/sollyucko/py-marshal/issues/2
+            Type::SmallTuple | Type::Tuple | Type::List | Type::Dict | Type::Set | Type::FrozenSet | Type::Code if flag => {
                 let i = p.refs.len();
                 p.refs.push(Obj::None);
                 Some(i)
@@ -1510,6 +1511,24 @@ pub mod read {
                     .kind(),
                 errors::ErrorKind::UnnormalizedLong
             );
+        }
+        
+        // See https://github.com/sollyucko/py-marshal/issues/2
+        #[test]
+        fn test_issue_2_ref_demarshalling_ordering_previously_broken() {
+            let list_ref = marshal_loads(b"\xdb\x02\x00\x00\x00\xda\x01ar\x01\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list = list_ref.try_read().unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(*list[0].clone().extract_string().unwrap(), "a");
+            assert_eq!(*list[1].clone().extract_string().unwrap(), "a");
+        }
+        #[test]
+        fn test_issue_2_ref_demarshalling_ordering_previously_working() {
+            let list_ref = marshal_loads(b"[\x02\x00\x00\x00\xda\x01ar\x00\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list = list_ref.try_read().unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(*list[0].clone().extract_string().unwrap(), "a");
+            assert_eq!(*list[1].clone().extract_string().unwrap(), "a");
         }
     }
 }
