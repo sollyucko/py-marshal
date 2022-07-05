@@ -214,6 +214,27 @@ impl Obj {
     define_is! { is_frozenset     (FrozenSet(_))  }
     define_is! { is_code          (Code(_))       }
 }
+impl From<&ObjHashable> for Obj {
+    fn from(orig: &ObjHashable) -> Self {
+        match orig {
+            ObjHashable::None => Self::None,
+            ObjHashable::StopIteration => Self::StopIteration,
+            ObjHashable::Ellipsis => Self::Ellipsis,
+            ObjHashable::Bool(x) => Self::Bool(*x),
+            ObjHashable::Long(x) => Self::Long(Arc::clone(x)),
+            ObjHashable::Float(x) => Self::Float(x.into_inner()),
+            ObjHashable::Complex(Complex { re, im }) => Self::Complex(Complex {
+                re: re.into_inner(),
+                im: im.into_inner(),
+            }),
+            ObjHashable::String(x) => Self::String(Arc::clone(x)),
+            ObjHashable::Tuple(x) => Self::Tuple(Arc::new(x.iter().map(Self::from).collect())),
+            ObjHashable::FrozenSet(x) => {
+                Self::FrozenSet(Arc::new(x.inner().iter().cloned().collect()))
+            }
+        }
+    }
+}
 /// Should mostly match Python's repr
 ///
 /// # Float, Complex
@@ -347,6 +368,11 @@ fn python_code_repr(f: &mut fmt::Formatter, x: &Code) -> fmt::Result {
 
 #[derive(Debug)]
 pub struct HashableHashSet<T>(HashSet<T>);
+impl<T> HashableHashSet<T> {
+    fn inner(&self) -> &HashSet<T> {
+        &self.0
+    }
+}
 impl<T> Hash for HashableHashSet<T>
 where
     T: Hash,
