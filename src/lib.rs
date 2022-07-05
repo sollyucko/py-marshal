@@ -3,6 +3,7 @@ use bitflags::bitflags;
 use num_bigint::BigInt;
 use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
+use ordered_float::OrderedFloat;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -343,29 +344,6 @@ fn python_frozenset_repr(f: &mut fmt::Formatter, x: &HashSet<ObjHashable>) -> fm
 fn python_code_repr(f: &mut fmt::Formatter, x: &Code) -> fmt::Result {
     write!(f, "code(argcount={:?}, posonlyargcount={:?}, kwonlyargcount={:?}, nlocals={:?}, stacksize={:?}, flags={:?}, code={:?}, consts={:?}, names={:?}, varnames={:?}, freevars={:?}, cellvars={:?}, filename={:?}, name={:?}, firstlineno={:?}, lnotab=bytes({:?}))", x.argcount, x.posonlyargcount, x.kwonlyargcount, x.nlocals, x.stacksize, x.flags, Obj::Bytes(Arc::clone(&x.code)), x.consts, x.names, x.varnames, x.freevars, x.cellvars, x.filename, x.name, x.firstlineno, &x.lnotab)
 }
-/// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
-/// each other, so it can implement Eq and Hash. `HashF64(-0.0) == HashF64(0.0)`.
-#[derive(Clone, Debug)]
-pub struct HashF64(f64);
-impl PartialEq for HashF64 {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 || (self.0.is_nan() && other.0.is_nan())
-    }
-}
-impl Eq for HashF64 {}
-impl Hash for HashF64 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        if self.0.is_nan() {
-            // Multiple NaN values exist
-            state.write_u8(0);
-        } else if self.0 == 0.0 {
-            // 0.0 == -0.0
-            state.write_u8(1);
-        } else {
-            state.write_u64(self.0.to_bits()); // This should be fine, since all the dupes should be accounted for.
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct HashableHashSet<T>(HashSet<T>);
@@ -412,8 +390,8 @@ pub enum ObjHashable {
     Ellipsis,
     Bool(bool),
     Long(Arc<BigInt>),
-    Float(HashF64),
-    Complex(Complex<HashF64>),
+    Float(OrderedFloat<f64>),
+    Complex(Complex<OrderedFloat<f64>>),
     String(Arc<String>),
     Tuple(Arc<Vec<ObjHashable>>),
     FrozenSet(Arc<HashableHashSet<ObjHashable>>),
@@ -429,10 +407,10 @@ impl TryFrom<&Obj> for ObjHashable {
             Obj::Ellipsis => Ok(Self::Ellipsis),
             Obj::Bool(x) => Ok(Self::Bool(*x)),
             Obj::Long(x) => Ok(Self::Long(Arc::clone(x))),
-            Obj::Float(x) => Ok(Self::Float(HashF64(*x))),
+            Obj::Float(x) => Ok(Self::Float(OrderedFloat(*x))),
             Obj::Complex(Complex { re, im }) => Ok(Self::Complex(Complex {
-                re: HashF64(*re),
-                im: HashF64(*im),
+                re: OrderedFloat(*re),
+                im: OrderedFloat(*im),
             })),
             Obj::String(x) => Ok(Self::String(Arc::clone(x))),
             Obj::Tuple(x) => Ok(Self::Tuple(Arc::new(
@@ -893,7 +871,15 @@ pub mod read {
         let mut idx: Option<usize> = match type_ {
             // R_REF/r_ref_reserve before reading contents
             // See https://github.com/sollyucko/py-marshal/issues/2
-            Type::SmallTuple | Type::Tuple | Type::List | Type::Dict | Type::Set | Type::FrozenSet | Type::Code if flag => {
+            Type::SmallTuple
+            | Type::Tuple
+            | Type::List
+            | Type::Dict
+            | Type::Set
+            | Type::FrozenSet
+            | Type::Code
+                if flag =>
+            {
                 let i = p.refs.len();
                 p.refs.push(Obj::None);
                 Some(i)
@@ -1512,11 +1498,14 @@ pub mod read {
                 errors::ErrorKind::UnnormalizedLong
             );
         }
-        
+
         // See https://github.com/sollyucko/py-marshal/issues/2
         #[test]
         fn test_issue_2_ref_demarshalling_ordering_previously_broken() {
-            let list_ref = marshal_loads(b"\xdb\x02\x00\x00\x00\xda\x01ar\x01\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list_ref = marshal_loads(b"\xdb\x02\x00\x00\x00\xda\x01ar\x01\x00\x00\x00")
+                .unwrap()
+                .extract_list()
+                .unwrap();
             let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 2);
             assert_eq!(*list[0].clone().extract_string().unwrap(), "a");
@@ -1524,7 +1513,10 @@ pub mod read {
         }
         #[test]
         fn test_issue_2_ref_demarshalling_ordering_previously_working() {
-            let list_ref = marshal_loads(b"[\x02\x00\x00\x00\xda\x01ar\x00\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list_ref = marshal_loads(b"[\x02\x00\x00\x00\xda\x01ar\x00\x00\x00\x00")
+                .unwrap()
+                .extract_list()
+                .unwrap();
             let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 2);
             assert_eq!(*list[0].clone().extract_string().unwrap(), "a");

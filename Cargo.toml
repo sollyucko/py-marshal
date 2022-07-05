@@ -18,3 +18,4 @@ num-bigint = "0.2"
 num-complex = "0.2"
 error-chain = "0.12"
 owning_ref = { version = "0.4", optional = true }
+ordered-float = "3.0"
