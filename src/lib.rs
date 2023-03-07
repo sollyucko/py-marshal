@@ -3,6 +3,7 @@ use bitflags::bitflags;
 use num_bigint::BigInt;
 use num_complex::Complex;
 use num_derive::{FromPrimitive, ToPrimitive};
+use ordered_float::OrderedFloat;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -19,34 +20,34 @@ pub type ArcRwLock<T> = Arc<RwLock<T>>;
 #[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
 #[repr(u8)]
 enum Type {
-    Null               = b'0',
-    None               = b'N',
-    False              = b'F',
-    True               = b'T',
-    StopIter           = b'S',
-    Ellipsis           = b'.',
-    Int                = b'i',
-    Int64              = b'I',
-    Float              = b'f',
-    BinaryFloat        = b'g',
-    Complex            = b'x',
-    BinaryComplex      = b'y',
-    Long               = b'l',
-    String             = b's',
-    Interned           = b't',
-    Ref                = b'r',
-    Tuple              = b'(',
-    List               = b'[',
-    Dict               = b'{',
-    Code               = b'c',
-    Unicode            = b'u',
-    Unknown            = b'?',
-    Set                = b'<',
-    FrozenSet          = b'>',
-    Ascii              = b'a',
-    AsciiInterned      = b'A',
-    SmallTuple         = b')',
-    ShortAscii         = b'z',
+    Null = b'0',
+    None = b'N',
+    False = b'F',
+    True = b'T',
+    StopIter = b'S',
+    Ellipsis = b'.',
+    Int = b'i',
+    Int64 = b'I',
+    Float = b'f',
+    BinaryFloat = b'g',
+    Complex = b'x',
+    BinaryComplex = b'y',
+    Long = b'l',
+    String = b's',
+    Interned = b't',
+    Ref = b'r',
+    Tuple = b'(',
+    List = b'[',
+    Dict = b'{',
+    Code = b'c',
+    Unicode = b'u',
+    Unknown = b'?',
+    Set = b'<',
+    FrozenSet = b'>',
+    Ascii = b'a',
+    AsciiInterned = b'A',
+    SmallTuple = b')',
+    ShortAscii = b'z',
     ShortAsciiInterned = b'Z',
 }
 impl Type {
@@ -213,6 +214,25 @@ impl Obj {
     define_is! { is_frozenset     (FrozenSet(_))  }
     define_is! { is_code          (Code(_))       }
 }
+impl From<&ObjHashable> for Obj {
+    fn from(orig: &ObjHashable) -> Self {
+        match orig {
+            ObjHashable::None => Self::None,
+            ObjHashable::StopIteration => Self::StopIteration,
+            ObjHashable::Ellipsis => Self::Ellipsis,
+            ObjHashable::Bool(x) => Self::Bool(*x),
+            ObjHashable::Long(x) => Self::Long(Arc::clone(x)),
+            ObjHashable::Float(x) => Self::Float(x.into_inner()),
+            ObjHashable::Complex(Complex { re, im }) => Self::Complex(Complex {
+                re: re.into_inner(),
+                im: im.into_inner(),
+            }),
+            ObjHashable::String(x) => Self::String(Arc::clone(x)),
+            ObjHashable::Tuple(x) => Self::Tuple(Arc::new(x.iter().map(Self::from).collect())),
+            ObjHashable::FrozenSet(x) => Self::FrozenSet(Arc::new(x.inner().clone())),
+        }
+    }
+}
 /// Should mostly match Python's repr
 ///
 /// # Float, Complex
@@ -343,32 +363,14 @@ fn python_frozenset_repr(f: &mut fmt::Formatter, x: &HashSet<ObjHashable>) -> fm
 fn python_code_repr(f: &mut fmt::Formatter, x: &Code) -> fmt::Result {
     write!(f, "code(argcount={:?}, posonlyargcount={:?}, kwonlyargcount={:?}, nlocals={:?}, stacksize={:?}, flags={:?}, code={:?}, consts={:?}, names={:?}, varnames={:?}, freevars={:?}, cellvars={:?}, filename={:?}, name={:?}, firstlineno={:?}, lnotab=bytes({:?}))", x.argcount, x.posonlyargcount, x.kwonlyargcount, x.nlocals, x.stacksize, x.flags, Obj::Bytes(Arc::clone(&x.code)), x.consts, x.names, x.varnames, x.freevars, x.cellvars, x.filename, x.name, x.firstlineno, &x.lnotab)
 }
-/// This is a f64 wrapper suitable for use as a key in a (Hash)Map, since NaNs compare equal to
-/// each other, so it can implement Eq and Hash. `HashF64(-0.0) == HashF64(0.0)`.
-#[derive(Clone, Debug)]
-pub struct HashF64(f64);
-impl PartialEq for HashF64 {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 || (self.0.is_nan() && other.0.is_nan())
-    }
-}
-impl Eq for HashF64 {}
-impl Hash for HashF64 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        if self.0.is_nan() {
-            // Multiple NaN values exist
-            state.write_u8(0);
-        } else if self.0 == 0.0 {
-            // 0.0 == -0.0
-            state.write_u8(1);
-        } else {
-            state.write_u64(self.0.to_bits()); // This should be fine, since all the dupes should be accounted for.
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct HashableHashSet<T>(HashSet<T>);
+impl<T> HashableHashSet<T> {
+    fn inner(&self) -> &HashSet<T> {
+        &self.0
+    }
+}
 impl<T> Hash for HashableHashSet<T>
 where
     T: Hash,
@@ -412,8 +414,8 @@ pub enum ObjHashable {
     Ellipsis,
     Bool(bool),
     Long(Arc<BigInt>),
-    Float(HashF64),
-    Complex(Complex<HashF64>),
+    Float(OrderedFloat<f64>),
+    Complex(Complex<OrderedFloat<f64>>),
     String(Arc<String>),
     Tuple(Arc<Vec<ObjHashable>>),
     FrozenSet(Arc<HashableHashSet<ObjHashable>>),
@@ -429,10 +431,10 @@ impl TryFrom<&Obj> for ObjHashable {
             Obj::Ellipsis => Ok(Self::Ellipsis),
             Obj::Bool(x) => Ok(Self::Bool(*x)),
             Obj::Long(x) => Ok(Self::Long(Arc::clone(x))),
-            Obj::Float(x) => Ok(Self::Float(HashF64(*x))),
+            Obj::Float(x) => Ok(Self::Float(OrderedFloat(*x))),
             Obj::Complex(Complex { re, im }) => Ok(Self::Complex(Complex {
-                re: HashF64(*re),
-                im: HashF64(*im),
+                re: OrderedFloat(*re),
+                im: OrderedFloat(*im),
             })),
             Obj::String(x) => Ok(Self::String(Arc::clone(x))),
             Obj::Tuple(x) => Ok(Self::Tuple(Arc::new(
@@ -653,7 +655,7 @@ mod test {
         );
         assert_eq!(format!("{:?}", Obj::String(Arc::new(String::from(
                             "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f")))),
-                            "\"\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\t\\n\\x0b\\x0c\\r\\x0e\\x0f\\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f !\\\"#$%&\\\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\\x7f\"");
+                            "\"\\0\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\t\\n\\x0b\\x0c\\r\\x0e\\x0f\\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f !\\\"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\\x7f\"");
     }
 }
 
@@ -716,7 +718,7 @@ mod utils {
                     0b110_1101_0010_0100,
                     0b001_0000_1001_1101
                 ]),
-                BigUint::from(0b001_0000_1001_1101_110_1101_0010_0100_000_1101_1100_0100_u64)
+                BigUint::from(0b0100_0010_0111_0111_0110_1001_0010_0000_1101_1100_0100_u64)
             );
         }
     }
@@ -893,7 +895,15 @@ pub mod read {
         let mut idx: Option<usize> = match type_ {
             // R_REF/r_ref_reserve before reading contents
             // See https://github.com/sollyucko/py-marshal/issues/2
-            Type::SmallTuple | Type::Tuple | Type::List | Type::Dict | Type::Set | Type::FrozenSet | Type::Code if flag => {
+            Type::SmallTuple
+            | Type::Tuple
+            | Type::List
+            | Type::Dict
+            | Type::Set
+            | Type::FrozenSet
+            | Type::Code
+                if flag =>
+            {
                 let i = p.refs.len();
                 p.refs.push(Obj::None);
                 Some(i)
@@ -1013,14 +1023,14 @@ pub mod read {
             .map_err(ErrorKind::TypeError)?)
     }
     fn r_object_extract_tuple_string(p: &mut RFile<impl Read>) -> Result<Vec<Arc<String>>> {
-        Ok(r_object_extract_tuple(p)?
+        r_object_extract_tuple(p)?
             .iter()
             .map(|x| {
                 x.clone()
                     .extract_string()
                     .map_err(|o: Obj| Error::from(ErrorKind::TypeError(o)))
             })
-            .collect::<Result<Vec<Arc<String>>>>()?)
+            .collect::<Result<Vec<Arc<String>>>>()
     }
 
     fn read_object(p: &mut RFile<impl Read>) -> Result<Obj> {
@@ -1154,8 +1164,8 @@ pub mod read {
 
         #[test]
         fn test_bool() {
-            assert_eq!(true, loads_unwrap(b"T").extract_bool().unwrap());
-            assert_eq!(false, loads_unwrap(b"F").extract_bool().unwrap());
+            assert!(loads_unwrap(b"T").extract_bool().unwrap());
+            assert!(!loads_unwrap(b"F").extract_bool().unwrap());
         }
 
         #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
@@ -1381,13 +1391,10 @@ pub mod read {
             for o in &*tuple {
                 assert_eq!(*o.clone().extract_string().unwrap(), ".zyx.41");
             }
-            assert_eq!(
-                dict[&ObjHashable::String(Arc::new("aboolean".to_owned()))]
-                    .clone()
-                    .extract_bool()
-                    .unwrap(),
-                false
-            );
+            assert!(!dict[&ObjHashable::String(Arc::new("aboolean".to_owned()))]
+                .clone()
+                .extract_bool()
+                .unwrap());
             assert_eq!(
                 *dict[&ObjHashable::String(Arc::new("aunicode".to_owned()))]
                     .clone()
@@ -1512,11 +1519,14 @@ pub mod read {
                 errors::ErrorKind::UnnormalizedLong
             );
         }
-        
+
         // See https://github.com/sollyucko/py-marshal/issues/2
         #[test]
         fn test_issue_2_ref_demarshalling_ordering_previously_broken() {
-            let list_ref = marshal_loads(b"\xdb\x02\x00\x00\x00\xda\x01ar\x01\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list_ref = marshal_loads(b"\xdb\x02\x00\x00\x00\xda\x01ar\x01\x00\x00\x00")
+                .unwrap()
+                .extract_list()
+                .unwrap();
             let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 2);
             assert_eq!(*list[0].clone().extract_string().unwrap(), "a");
@@ -1524,7 +1534,10 @@ pub mod read {
         }
         #[test]
         fn test_issue_2_ref_demarshalling_ordering_previously_working() {
-            let list_ref = marshal_loads(b"[\x02\x00\x00\x00\xda\x01ar\x00\x00\x00\x00").unwrap().extract_list().unwrap();
+            let list_ref = marshal_loads(b"[\x02\x00\x00\x00\xda\x01ar\x00\x00\x00\x00")
+                .unwrap()
+                .extract_list()
+                .unwrap();
             let list = list_ref.try_read().unwrap();
             assert_eq!(list.len(), 2);
             assert_eq!(*list[0].clone().extract_string().unwrap(), "a");
