@@ -1,6 +1,6 @@
 [package]
 name = "py-marshal"
-version = "0.3.4"
+version = "0.4.0"
 authors = ["Solomon Ucko <solly.ucko@gmail.com>"]
 edition = "2018"
 description = "A Rust port of https://github.com/python/cpython/blob/master/Python/marshal.c"
