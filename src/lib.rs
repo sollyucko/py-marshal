@@ -227,6 +227,7 @@ impl From<&ObjHashable> for Obj {
                 re: re.into_inner(),
                 im: im.into_inner(),
             }),
+            ObjHashable::Bytes(x) => Self::Bytes(Arc::clone(x)),
             ObjHashable::String(x) => Self::String(Arc::clone(x)),
             ObjHashable::Tuple(x) => Self::Tuple(Arc::new(x.iter().map(Self::from).collect())),
             ObjHashable::FrozenSet(x) => Self::FrozenSet(Arc::new(x.inner().clone())),
@@ -416,6 +417,7 @@ pub enum ObjHashable {
     Long(Arc<BigInt>),
     Float(OrderedFloat<f64>),
     Complex(Complex<OrderedFloat<f64>>),
+    Bytes(Arc<Vec<u8>>),
     String(Arc<String>),
     Tuple(Arc<Vec<ObjHashable>>),
     FrozenSet(Arc<HashableHashSet<ObjHashable>>),
@@ -436,6 +438,7 @@ impl TryFrom<&Obj> for ObjHashable {
                 re: OrderedFloat(*re),
                 im: OrderedFloat(*im),
             })),
+            Obj::Bytes(x) => Ok(Self::Bytes(Arc::clone(x))),
             Obj::String(x) => Ok(Self::String(Arc::clone(x))),
             Obj::Tuple(x) => Ok(Self::Tuple(Arc::new(
                 x.iter()
@@ -466,6 +469,7 @@ impl fmt::Debug for ObjHashable {
                     im: x.im.0,
                 },
             ),
+            Self::Bytes(x) => python_bytes_repr(f, x),
             Self::String(x) => python_string_repr(f, x),
             Self::Tuple(x) => python_tuple_hashable_repr(f, x),
             Self::FrozenSet(x) => python_frozenset_repr(f, &x.0),
@@ -1402,6 +1406,39 @@ pub mod read {
                     .unwrap(),
                 "Andr\u{e8} Previn"
             );
+        }
+
+        #[test]
+        fn test_dict_with_bytes_key() {
+            let mut input: &[u8] = b"{s\x08\x00\x00\x00u_key \xce\xb1u\n\x00\x00\x00unicode \xce\xb1s\x08\x00\x00\x00b_key \xce\xb1s\x08\x00\x00\x00bytes \xce\xb10";
+            let dict_ref = marshal_load(&mut input).unwrap().extract_dict().unwrap();
+            let dict = dict_ref.try_read().unwrap();
+            assert_eq!(dict.len(), 2);
+            assert_eq!(
+                *dict[&ObjHashable::Bytes(Arc::new("b_key α".as_bytes().to_vec()))]
+                    .clone()
+                    .extract_bytes()
+                    .unwrap(),
+                "bytes α".as_bytes().to_vec()
+            );
+            assert_eq!(
+                *dict[&ObjHashable::Bytes(Arc::new("u_key α".as_bytes().to_vec()))]
+                    .clone()
+                    .extract_string()
+                    .unwrap(),
+                "unicode α".to_owned()
+            );
+        }
+
+        #[test]
+        fn test_set_with_bytes() {
+            let mut input: &[u8] = b"<\x03\x00\x00\x00i{\x00\x00\x00u\x06\x00\x00\x00abc \xce\xb1s\x06\x00\x00\x00abc \xce\xb1";
+            let set_ref = marshal_load(&mut input).unwrap().extract_set().unwrap();
+            let set = set_ref.try_read().unwrap();
+            assert_eq!(set.len(), 3);
+            assert!(set.contains(&ObjHashable::Bytes(Arc::new("abc α".as_bytes().to_vec()))));
+            assert!(set.contains(&ObjHashable::String(Arc::new("abc α".to_owned()))));
+            assert!(set.contains(&ObjHashable::Long(Arc::new(BigInt::from(123)))));
         }
 
         /// Tests hash implementation
